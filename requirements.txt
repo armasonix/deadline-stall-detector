@@ -1,5 +1,8 @@
-rich>=13.7.0
-requests>=2.31.0
-pytest>=8.0.0
-pytest-mock>=3.12.0
-pyyaml>=6.0.1
+# Runtime
+rich>=13.0
+requests>=2.31
+PyYAML>=6.0
+
+# Testing
+pytest>=8.0
+pytest-mock>=3.14

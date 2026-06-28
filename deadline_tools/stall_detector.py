@@ -1,221 +1,181 @@
-"""Stall Detector — core logic for deadline-stall-detector.
+"""Stall Detector — JobSnapshot, StallHistory, StallDetector.check()
 
-Polls Deadline Web Service, detects stalled render jobs,
-automatically requeues tasks and blacklists bad workers.
+Двойной сигнал зависания:
+  1. Прогресс джоба не изменился с прошлого снапшота
+  2. Нет новых файлов в output_dir за период stall_threshold_min
 
-Usage:
-    python -m deadline_tools.stall_detector --config config.yaml
+Только детекция — recovery вынесен в recovery.py.
 """
 from __future__ import annotations
 
-import argparse
 import logging
-import time
-from collections import defaultdict
+import os
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
-
-import yaml
-
-from .connection import get_connection, ping_webservice
 
 log = logging.getLogger(__name__)
 
 
 @dataclass
 class JobSnapshot:
-    """Lightweight snapshot of a rendering job at a single poll."""
+    """Снапшот рендерящегося джоба в момент поллинга."""
     job_id: str
     name: str
-    status: str
-    completed_chunks: int
-    total_chunks: int
-    worker: Optional[str] = None
-    captured_at: datetime = field(default_factory=datetime.utcnow)
+    progress: float          # 0.0 – 100.0
+    output_dir: str
+    worker: Optional[str]
+    timestamp: datetime = field(default_factory=datetime.utcnow)
 
 
 @dataclass
-class StallRecord:
-    """Tracks how many consecutive polls a job has shown no progress."""
+class StallHistory:
+    """История зависаний одного джоба. stall_count определяет тир эскалации."""
     job_id: str
     stall_count: int = 0
-    last_completed: int = 0
-    last_seen: datetime = field(default_factory=datetime.utcnow)
+    failed_workers: List[str] = field(default_factory=list)
+    last_snapshot: Optional[JobSnapshot] = None
 
 
+@dataclass
 class StallDetector:
     """
-    Monitors active Deadline jobs and reacts to stalls.
-
-    Escalation ladder:
-        1. WARN      — stall detected, logged
-        2. REQUEUE   — task requeued to different worker
-        3. BLACKLIST — worker removed from pools, job suspended
+    Детектор зависаний. Не вызывает Deadline API напрямую —
+    принимает con снаружи, чтобы его можно было мокировать в тестах.
     """
+    con: object
+    stall_threshold_min: int = 20
 
-    def __init__(self, config: dict):
-        self.cfg = config
-        self.det = config["detector"]
-        self.con = None
-        self._stall_records: Dict[str, StallRecord] = {}
-        self._worker_strikes: Dict[str, int] = defaultdict(int)
-        self._blacklisted: set = set()
+    _snapshots: Dict[str, JobSnapshot] = field(default_factory=dict)
+    _history: Dict[str, StallHistory] = field(default_factory=dict)
 
-    def run(self):
-        """Main loop — polls indefinitely until KeyboardInterrupt."""
-        self.con = get_connection()
-        if not ping_webservice(self.con):
-            raise ConnectionError("Deadline Web Service is not reachable.")
+    def check(self) -> List[StallHistory]:
+        """
+        Один цикл проверки. Возвращает список StallHistory джобов,
+        у которых зафиксировано зависание (stall_count увеличен).
+        """
+        current_jobs = self._fetch_rendering_jobs()
+        stalled: List[StallHistory] = []
+        now = datetime.utcnow()
 
-        log.info("Stall detector started. Poll interval: %ds", self.det["poll_interval"])
-        try:
-            while True:
-                self._tick()
-                time.sleep(self.det["poll_interval"])
-        except KeyboardInterrupt:
-            log.info("Stall detector stopped.")
+        for snap in current_jobs:
+            prev = self._snapshots.get(snap.job_id)
 
-    def run_once(self) -> List[str]:
-        """Single poll — useful for testing. Returns list of stalled job IDs."""
-        if self.con is None:
-            self.con = get_connection()
-        return self._tick()
+            if prev is None:
+                # Первый раз видим джоб — записываем baseline, не детектируем
+                self._snapshots[snap.job_id] = snap
+                self._history.setdefault(snap.job_id, StallHistory(job_id=snap.job_id))
+                log.debug("Baseline captured for job %s (%s)", snap.job_id, snap.name)
+                continue
 
-    def _tick(self) -> List[str]:
-        snapshots = self._fetch_active_jobs()
-        stalled_ids = []
+            elapsed = now - prev.timestamp
+            if elapsed < timedelta(minutes=self.stall_threshold_min):
+                # Ещё не прошло достаточно времени — пропускаем
+                continue
 
-        for snap in snapshots:
-            record = self._stall_records.setdefault(
-                snap.job_id,
-                StallRecord(job_id=snap.job_id, last_completed=snap.completed_chunks)
-            )
+            progress_moved = snap.progress > prev.progress
+            new_files = self._new_files_exist(snap.output_dir, prev.timestamp)
 
-            if snap.completed_chunks > record.last_completed:
-                record.stall_count = 0
-                record.last_completed = snap.completed_chunks
-                log.debug("Job %s (%s): progress %d/%d",
-                          snap.job_id, snap.name,
-                          snap.completed_chunks, snap.total_chunks)
+            if progress_moved or new_files:
+                # Прогресс есть — сбрасываем счётчик, обновляем снапшот
+                history = self._history[snap.job_id]
+                if history.stall_count > 0:
+                    log.info("Job %s recovered (progress=%.1f%%)", snap.job_id, snap.progress)
+                    history.stall_count = 0
+                self._snapshots[snap.job_id] = snap
             else:
-                record.stall_count += 1
-                record.last_seen = datetime.utcnow()
+                # Оба сигнала: нет прогресса + нет файлов → stall
+                history = self._history[snap.job_id]
+                history.stall_count += 1
+                history.last_snapshot = snap
+
+                # Запоминаем воркера если он новый
+                if snap.worker and snap.worker not in history.failed_workers:
+                    history.failed_workers.append(snap.worker)
+
                 log.warning(
-                    "Job %s (%s): no progress for %d poll(s). Worker: %s",
-                    snap.job_id, snap.name, record.stall_count, snap.worker
+                    "STALL detected: job=%s name=%s stall_count=%d worker=%s",
+                    snap.job_id, snap.name, history.stall_count, snap.worker
                 )
-                if record.stall_count >= self.det["stall_threshold_polls"]:
-                    stalled_ids.append(snap.job_id)
-                    self._escalate(snap, record)
+                stalled.append(history)
+                # Обновляем снапшот чтобы не считать снова за тот же период
+                self._snapshots[snap.job_id] = snap
 
-        active_ids = {s.job_id for s in snapshots}
-        for jid in [j for j in self._stall_records if j not in active_ids]:
-            del self._stall_records[jid]
+        # Чистим историю завершённых джобов
+        active_ids = {s.job_id for s in current_jobs}
+        for jid in list(self._snapshots.keys()):
+            if jid not in active_ids:
+                del self._snapshots[jid]
+                self._history.pop(jid, None)
 
-        return stalled_ids
+        return stalled
 
-    def _fetch_active_jobs(self) -> List[JobSnapshot]:
-        watch = self.det.get("watch_statuses", ["Rendering"])
+    # ── private ──────────────────────────────────────────────────────────────
+
+    def _fetch_rendering_jobs(self) -> List[JobSnapshot]:
+        """Получить список джобов со статусом Rendering из Deadline."""
         try:
             jobs = self.con.Jobs.GetJobs()
         except Exception as exc:
-            log.error("Failed to fetch jobs: %s", exc)
+            log.error("Failed to fetch jobs from Deadline: %s", exc)
             return []
 
-        snapshots = []
+        result = []
         for job in jobs:
-            status = job.get("Props", {}).get("Stat", "")
-            if status not in watch:
+            props = job.get("Props", {})
+            # Stat=3 → Rendering в Deadline 10.x
+            if props.get("Stat", -1) != 3:
                 continue
+
             job_id = job.get("_id", "")
-            snapshots.append(JobSnapshot(
+            output_dirs = props.get("OutDir", [])
+            output_dir = output_dirs[0] if output_dirs else ""
+
+            # Прогресс: завершённые задачи / всего задач * 100
+            completed = props.get("Comp", 0)
+            total = max(props.get("Tasks", 1), 1)
+            progress = round(completed / total * 100, 2)
+
+            worker = self._get_active_worker(job_id)
+
+            result.append(JobSnapshot(
                 job_id=job_id,
-                name=job.get("Props", {}).get("Name", job_id),
-                status=status,
-                completed_chunks=job.get("Props", {}).get("Comp", 0),
-                total_chunks=job.get("Props", {}).get("Tasks", 1),
-                worker=self._get_active_worker(job_id),
+                name=props.get("Name", job_id),
+                progress=progress,
+                output_dir=output_dir,
+                worker=worker,
             ))
-        return snapshots
+
+        return result
 
     def _get_active_worker(self, job_id: str) -> Optional[str]:
+        """Вернуть имя воркера, рендерящего таску джоба прямо сейчас."""
         try:
             for task in self.con.Tasks.GetJobTasks(job_id):
                 if task.get("Stat", "") == "Rendering":
-                    return task.get("SlaveRend", None)
+                    return task.get("SlaveRend") or None
         except Exception:
             pass
         return None
 
-    def _escalate(self, snap: JobSnapshot, record: StallRecord):
-        strikes = record.stall_count - self.det["stall_threshold_polls"]
-        if strikes == 0:
-            log.warning("[TIER-1] Requeuing stalled task for job %s", snap.job_id)
-            self._requeue_task(snap)
-        elif strikes == 1 and snap.worker:
-            log.error("[TIER-2] Blacklisting worker %s (job %s)", snap.worker, snap.job_id)
-            self._blacklist_worker(snap.worker)
-        elif strikes >= 2:
-            log.critical("[TIER-3] Suspending job %s — manual intervention required.", snap.job_id)
-            self._suspend_job(snap.job_id)
+    def _new_files_exist(self, output_dir: str, since: datetime) -> bool:
+        """
+        Проверить, появились ли новые файлы в output_dir после since.
+        Возвращает True если директория недоступна (не считаем зависанием).
+        """
+        if not output_dir:
+            return True  # нет output_dir → не блокируем детекцию
 
-    def _requeue_task(self, snap: JobSnapshot):
         try:
-            self.con.Jobs.RequeueJob(snap.job_id)
-            log.info("Requeued job %s", snap.job_id)
-        except Exception as exc:
-            log.error("Failed to requeue job %s: %s", snap.job_id, exc)
-
-    def _blacklist_worker(self, worker: str):
-        if worker in self._blacklisted:
-            return
-        pools = self.det.get("blacklist_pools", [])
-        try:
-            info = self.con.Slaves.GetSlaveInfo(worker)
-            current = info.get("Props", {}).get("Pools", [])
-            self.con.Slaves.SaveSlaveInfo(worker, {"Props": {"Pools": [p for p in current if p not in pools]}})
-            self._blacklisted.add(worker)
-            log.warning("Worker %s removed from pools %s", worker, pools)
-        except Exception as exc:
-            log.error("Failed to blacklist worker %s: %s", worker, exc)
-
-    def _suspend_job(self, job_id: str):
-        try:
-            self.con.Jobs.SuspendJob(job_id)
-            log.critical("Job %s suspended. Awaiting manual review.", job_id)
-        except Exception as exc:
-            log.error("Failed to suspend job %s: %s", job_id, exc)
-
-
-def _load_config(path: str) -> dict:
-    with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
-
-
-def _setup_logging(cfg: dict):
-    level = getattr(logging, cfg.get("logging", {}).get("level", "INFO"))
-    log_file = cfg.get("logging", {}).get("file", "")
-    handlers = [logging.StreamHandler()]
-    if log_file:
-        import os
-        os.makedirs(os.path.dirname(log_file), exist_ok=True)
-        handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        handlers=handlers,
-    )
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Deadline Stall Detector")
-    parser.add_argument("--config", default="config.yaml")
-    args = parser.parse_args()
-    cfg = _load_config(args.config)
-    _setup_logging(cfg)
-    StallDetector(cfg).run()
-
-
-if __name__ == "__main__":
-    main()
+            with os.scandir(output_dir) as entries:
+                for entry in entries:
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    mtime = datetime.utcfromtimestamp(entry.stat().st_mtime)
+                    if mtime > since:
+                        return True
+            return False
+        except (FileNotFoundError, PermissionError, OSError):
+            # Директория недоступна — считаем что файлы есть, не блокируем
+            log.debug("Output dir not accessible: %s", output_dir)
+            return True

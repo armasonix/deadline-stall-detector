@@ -6,21 +6,14 @@ from pathlib import Path
 
 def get_connection():
     """
-    Returns a live DeadlineCon instance using environment variables or config.
+    Returns a live DeadlineCon instance.
 
-    Required env vars:
+    Env vars:
         DEADLINE_REPO_PATH  — path to DeadlineRepository root
         DEADLINE_HOST       — hostname or IP (default: localhost)
-        DEADLINE_PORT       — WebService port (default: 8081)
-
-    Raises:
-        ImportError: if Deadline Python API not found at repo path
-        ConnectionError: if WebService is unreachable
+        DEADLINE_PORT       — WebService port (default: 8082)
     """
-    repo_path = os.environ.get(
-        "DEADLINE_REPO_PATH",
-        r"C:\DeadlineRepository10"
-    )
+    repo_path = os.environ.get("DEADLINE_REPO_PATH", r"C:\DeadlineRepository10")
     api_path = str(Path(repo_path) / "api" / "python")
 
     if api_path not in sys.path:
@@ -36,8 +29,7 @@ def get_connection():
         )
 
     host = os.environ.get("DEADLINE_HOST", "localhost")
-    port = int(os.environ.get("DEADLINE_PORT", "8081"))
-
+    port = int(os.environ.get("DEADLINE_PORT", "8082"))
     return Connect.DeadlineCon(host, port)
 
 
