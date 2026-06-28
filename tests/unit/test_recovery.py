@@ -1,19 +1,20 @@
-"""Unit tests for recovery.handle_stall() - without a real Deadline."""
+"""Unit tests for recovery.handle_stall() - no real Deadline needed."""
 from __future__ import annotations
 
-from unittest.mock import MagicMock, call
-
-import pytest
+from datetime import datetime, timezone
+from unittest.mock import MagicMock
 
 from deadline_tools.recovery import handle_stall
 from deadline_tools.stall_detector import JobSnapshot, StallHistory
-from datetime import datetime
+
+UTC = timezone.utc
 
 
 def _make_history(job_id="job-001", stall_count=1, worker="render-node-01"):
     snap = JobSnapshot(
         job_id=job_id, name="test_job", progress=50.0,
-        output_dir="", worker=worker, timestamp=datetime.utcnow()
+        output_dir="", worker=worker,
+        timestamp=datetime.now(UTC),
     )
     h = StallHistory(job_id=job_id, stall_count=stall_count)
     h.last_snapshot = snap
@@ -32,19 +33,14 @@ def _make_con():
     return con
 
 
-def _make_notifier():
-    return MagicMock()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
+# ---- tests ------------------------------------------------------------------
 
 def test_tier1_requeue():
     """stall_count=1 -> RequeueJob called, warn sent."""
     con = _make_con()
-    notifier = _make_notifier()
-    history = _make_history(stall_count=1)
+    notifier = MagicMock()
 
-    action = handle_stall(con, history, _make_job_dict(), notifier)
+    action = handle_stall(con, _make_history(stall_count=1), _make_job_dict(), notifier)
 
     assert action == "requeued"
     con.Jobs.RequeueJob.assert_called_once_with("job-001")
@@ -55,10 +51,10 @@ def test_tier1_requeue():
 def test_tier2_blacklist_and_requeue():
     """stall_count=2 -> SetJobMachineBlacklist + RequeueJob called."""
     con = _make_con()
-    notifier = _make_notifier()
-    history = _make_history(stall_count=2, worker="render-node-01")
+    notifier = MagicMock()
 
-    action = handle_stall(con, history, _make_job_dict(), notifier)
+    action = handle_stall(con, _make_history(stall_count=2, worker="render-node-01"),
+                          _make_job_dict(), notifier)
 
     assert action == "requeued+blacklisted"
     con.Jobs.SetJobMachineBlacklist.assert_called_once_with("job-001", ["render-node-01"])
@@ -69,10 +65,9 @@ def test_tier2_blacklist_and_requeue():
 def test_tier3_suspend():
     """stall_count=3 -> SuspendJob called, critical sent."""
     con = _make_con()
-    notifier = _make_notifier()
-    history = _make_history(stall_count=3)
+    notifier = MagicMock()
 
-    action = handle_stall(con, history, _make_job_dict(), notifier)
+    action = handle_stall(con, _make_history(stall_count=3), _make_job_dict(), notifier)
 
     assert action == "suspended"
     con.Jobs.SuspendJob.assert_called_once_with("job-001")
@@ -81,12 +76,12 @@ def test_tier3_suspend():
 
 
 def test_tier2_no_worker_skips_blacklist():
-    """stall_count=2, worker=None -> The blacklist isn't being called; it gets requeued anyway."""
+    """stall_count=2, worker=None -> blacklist skipped, requeue still runs."""
     con = _make_con()
-    notifier = _make_notifier()
-    history = _make_history(stall_count=2, worker=None)
+    notifier = MagicMock()
 
-    action = handle_stall(con, history, _make_job_dict(), notifier)
+    action = handle_stall(con, _make_history(stall_count=2, worker=None),
+                          _make_job_dict(), notifier)
 
     assert action == "requeued+blacklisted"
     con.Jobs.SetJobMachineBlacklist.assert_not_called()
