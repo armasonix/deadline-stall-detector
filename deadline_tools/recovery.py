@@ -1,76 +1,68 @@
-"""Recovery actions - three tiers of escalation.
-
-handle_stall(con, history, job, notifier) -> action_string
-
-  stall_count == 1  ->  requeue + warn
-  stall_count == 2  ->  requeue + SetJobMachineBlacklist + warn
-  stall_count >= 3  ->  SuspendJob + critical
-"""
+"""Three-tier recovery logic for stalled Deadline jobs."""
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import TYPE_CHECKING
 
-from .stall_detector import StallHistory
+if TYPE_CHECKING:
+    from deadline_tools.stall_detector import StallHistory
+    from deadline_tools.notifier import TelegramNotifier
 
 log = logging.getLogger(__name__)
 
 
-def handle_stall(con, history: StallHistory, job: dict, notifier) -> str:
-    """
-    Perform a recovery action in accordance with the escalation tier.
-    Returns the action string for logging.
-    """
-    job_name = job.get("Props", {}).get("Name", history.job_id)
-    worker: Optional[str] = history.last_snapshot.worker if history.last_snapshot else None
+def handle_stall(
+    con,
+    history: "StallHistory",
+    job_dict: dict,
+    notifier: "TelegramNotifier | None" = None,
+) -> str:
+    """Escalate based on stall_count. Returns action string."""
+    job_id: str = history.job_id
+    job_name: str = job_dict.get("Props", {}).get("Name", job_id)
+    # Worker comes from the live job_dict, not from StallHistory
+    # (StallHistory.last_snapshot.worker can be None when API returns empty)
+    worker: str | None = (
+        job_dict.get("MachineName")
+        or (history.last_snapshot.worker if history.last_snapshot else None)
+    )
+    count: int = history.stall_count
 
-    if history.stall_count == 1:
-        _requeue(con, history.job_id, job_name)
-        notifier.warn(f"STALLED: {job_name} - requeue attempt 1")
-        return "requeued"
-
-    elif history.stall_count == 2:
-        if worker:
-            _blacklist_worker(con, history.job_id, worker, job_name)
-        _requeue(con, history.job_id, job_name)
-        notifier.warn(
-            f"STALLED AGAIN: {job_name} - blacklisted {worker or 'unknown'}, requeue attempt 2"
-        )
-        return "requeued+blacklisted"
-
-    else:  # stall_count >= 3
-        _suspend(con, history.job_id, job_name)
-        notifier.critical(
-            f"SCENE ISSUE: {job_name} - suspended after {history.stall_count} workers. "
-            f"Manual review needed."
-        )
+    if count >= 3:
+        log.error("SUSPEND job=%s name=%s stall_count=%d", job_id, job_name, count)
+        con.Jobs.SuspendJob(job_id)
+        if notifier:
+            notifier.critical(
+                f"🚨 SCENE ISSUE: *{job_name}* — suspended after {count} stalls. "
+                "Manual review needed."
+            )
         return "suspended"
 
-
-# ── private helpers ───────────────────────────────────────────────────────────
-
-def _requeue(con, job_id: str, job_name: str):
-    try:
+    if count == 2:
+        log.warning(
+            "BLACKLIST+REQUEUE job=%s name=%s worker=%s", job_id, job_name, worker
+        )
+        if worker:
+            # Get current blacklist, append, set back
+            try:
+                existing: list[str] = list(
+                    con.Jobs.GetJobMachineBlacklist(job_id) or []
+                )
+            except Exception:
+                existing = []
+            if worker not in existing:
+                existing.append(worker)
+            con.Jobs.SetJobMachineBlacklist(job_id, existing)
         con.Jobs.RequeueJob(job_id)
-        log.info("Requeued job %s (%s)", job_id, job_name)
-    except Exception as exc:
-        log.error("RequeueJob failed for %s: %s", job_id, exc)
+        if notifier:
+            notifier.warn(
+                f"⚠️ STALLED AGAIN: *{job_name}* — blacklisting `{worker}` + requeue"
+            )
+        return "requeued+blacklisted"
 
-
-def _blacklist_worker(con, job_id: str, worker: str, job_name: str):
-    """Add a worker to the per-job machine blacklist (does not affect global pools)."""
-    try:
-        current = con.Jobs.GetJobMachineBlacklist(job_id) or []
-        if worker not in current:
-            con.Jobs.SetJobMachineBlacklist(job_id, current + [worker])
-            log.warning("Blacklisted worker %s for job %s (%s)", worker, job_id, job_name)
-    except Exception as exc:
-        log.error("SetJobMachineBlacklist failed for %s / %s: %s", job_id, worker, exc)
-
-
-def _suspend(con, job_id: str, job_name: str):
-    try:
-        con.Jobs.SuspendJob(job_id)
-        log.critical("Suspended job %s (%s)", job_id, job_name)
-    except Exception as exc:
-        log.error("SuspendJob failed for %s: %s", job_id, exc)
+    # count == 1
+    log.warning("REQUEUE job=%s name=%s", job_id, job_name)
+    con.Jobs.RequeueJob(job_id)
+    if notifier:
+        notifier.warn(f"⚠️ STALLED: *{job_name}* — requeue attempt {count}")
+    return "requeued"

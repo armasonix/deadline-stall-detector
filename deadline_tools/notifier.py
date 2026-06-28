@@ -1,11 +1,12 @@
-"""Telegram notifier - thin wrapper around the Bot API sendMessage endpoint.
+"""Telegram notifications for stall events.
 
-Reads credentials from environment variables:
-    TELEGRAM_BOT_TOKEN  - bot token from @BotFather
-    TELEGRAM_CHAT_ID    - target chat or channel ID
+Token and chat_id are read from environment variables — never hardcoded.
 
-Both levels route through the same _send() method.
-Failures are logged and swallowed so a Telegram outage never kills the monitor.
+Environment variables required:
+    TELEGRAM_BOT_TOKEN  — bot token from @BotFather
+    TELEGRAM_CHAT_ID    — numeric chat/channel id
+
+If variables are not set, notifications are silently skipped (warn logged).
 """
 from __future__ import annotations
 
@@ -14,55 +15,67 @@ import os
 import urllib.request
 import urllib.parse
 import json
-from typing import Optional
+from typing import Literal
 
 log = logging.getLogger(__name__)
 
-_TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
+ParseMode = Literal["Markdown", "HTML", "MarkdownV2"]
 
 
 class TelegramNotifier:
+    API_URL = "https://api.telegram.org/bot{token}/sendMessage"
+
     def __init__(
         self,
-        token: Optional[str] = None,
-        chat_id: Optional[str] = None,
+        token: str | None = None,
+        chat_id: str | None = None,
+        parse_mode: ParseMode = "Markdown",
+        timeout: int = 10,
     ) -> None:
-        self.token = token or os.environ.get("TELEGRAM_BOT_TOKEN", "")
-        self.chat_id = chat_id or os.environ.get("TELEGRAM_CHAT_ID", "")
+        self._token = token or os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        self._chat_id = chat_id or os.environ.get("TELEGRAM_CHAT_ID", "")
+        self._parse_mode = parse_mode
+        self._timeout = timeout
 
-        if not self.token or not self.chat_id:
+        if not self._token or not self._chat_id:
             log.warning(
                 "TelegramNotifier: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set. "
-                "Notifications will be skipped."
+                "Notifications disabled."
             )
 
-    # -- public ---------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Public helpers
+    # ------------------------------------------------------------------
 
-    def warn(self, message: str) -> None:
-        """Send a warning-level notification (yellow icon)."""
-        self._send(f"[WARNING] {message}")
+    def warn(self, text: str) -> bool:
+        """Send a warning-level message."""
+        return self._send(text)
 
-    def critical(self, message: str) -> None:
-        """Send a critical-level notification (red icon)."""
-        self._send(f"[CRITICAL] {message}")
+    def critical(self, text: str) -> bool:
+        """Send a critical-level message."""
+        return self._send(text)
 
-    def info(self, message: str) -> None:
-        """Send an informational notification."""
-        self._send(f"[INFO] {message}")
+    def info(self, text: str) -> bool:
+        return self._send(text)
 
-    # -- private --------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Internal
+    # ------------------------------------------------------------------
 
-    def _send(self, text: str) -> None:
-        if not self.token or not self.chat_id:
-            log.debug("Notification skipped (no credentials): %s", text)
-            return
+    def _send(self, text: str) -> bool:
+        """POST to Telegram sendMessage. Returns True on success."""
+        if not self._token or not self._chat_id:
+            return False
 
-        url = _TELEGRAM_API.format(token=self.token)
-        payload = json.dumps({
-            "chat_id": self.chat_id,
-            "text": text,
-            "parse_mode": "HTML",
-        }).encode()
+        url = self.API_URL.format(token=self._token)
+        payload = json.dumps(
+            {
+                "chat_id": self._chat_id,
+                "text": text,
+                "parse_mode": self._parse_mode,
+                "disable_web_page_preview": True,
+            }
+        ).encode("utf-8")
 
         req = urllib.request.Request(
             url,
@@ -71,8 +84,12 @@ class TelegramNotifier:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                if resp.status != 200:
-                    log.error("Telegram API returned %d", resp.status)
-        except OSError as exc:
-            log.error("Failed to send Telegram notification: %s", exc)
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                result = json.loads(resp.read())
+                if not result.get("ok"):
+                    log.error("Telegram API error: %s", result)
+                    return False
+                return True
+        except Exception as exc:
+            log.error("Telegram send failed: %s", exc)
+            return False
