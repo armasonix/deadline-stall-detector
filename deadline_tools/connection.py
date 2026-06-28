@@ -9,9 +9,9 @@ def get_connection():
     Returns a live DeadlineCon instance.
 
     Env vars:
-        DEADLINE_REPO_PATH  — path to DeadlineRepository root
-        DEADLINE_HOST       — hostname or IP (default: localhost)
-        DEADLINE_PORT       — WebService port (default: 8082)
+        DEADLINE_REPO_PATH  - path to DeadlineRepository root
+        DEADLINE_HOST       - hostname or IP (default: localhost)
+        DEADLINE_PORT       - WebService port (default: 8082)
     """
     repo_path = os.environ.get("DEADLINE_REPO_PATH", r"C:\DeadlineRepository10")
     api_path = str(Path(repo_path) / "api" / "python")
@@ -34,7 +34,7 @@ def get_connection():
 
 
 def ping_webservice(con) -> bool:
-    """Quick health check — returns True if WebService responds."""
+    """Quick health check - returns True if WebService responds."""
     try:
         con.Slaves.GetSlaveNames()
         return True

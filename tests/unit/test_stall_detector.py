@@ -1,4 +1,4 @@
-"""Unit tests for StallDetector.check() — без зависимости от Deadline."""
+"""Unit tests for StallDetector.check() - without a dependency on Deadline."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta
@@ -13,7 +13,7 @@ from deadline_tools.stall_detector import JobSnapshot, StallDetector, StallHisto
 
 def _make_job(job_id="job-001", name="test_job", progress=50.0,
               output_dir="", worker="render-node-01"):
-    """Фейковый dict в формате Deadline Jobs API."""
+    """A mock dictionary in the Deadline Jobs API format."""
     return {
         "_id": job_id,
         "Props": {
@@ -35,38 +35,38 @@ def _make_con(jobs=None, tasks=None):
     return con
 
 
-# ── тесты ────────────────────────────────────────────────────────────────────
+# ── tests ────────────────────────────────────────────────────────────────────
 
 def test_first_run_no_stall():
-    """Первый запуск — нет истории, нечего сравнивать → пустой список."""
+    """First launch - no history, nothing to compare against -> empty list."""
     con = _make_con(jobs=[_make_job()])
     detector = StallDetector(con=con, stall_threshold_min=20)
 
     result = detector.check()
 
-    assert result == [], "Первый запуск не должен возвращать зависания"
+    assert result == [], "The first launch should not result in a hang."
     assert "job-001" in detector._snapshots
 
 
 def test_stalled_no_progress_no_files():
-    """Снапшот 25 минут назад, прогресс не изменился, файлов нет → stall."""
+    """Snapshot 25 minutes ago, progress unchanged, no files -> stall."""
     con = _make_con(jobs=[_make_job(progress=50.0, output_dir="")])
     detector = StallDetector(con=con, stall_threshold_min=20)
 
-    # Устанавливаем baseline с timestamp 25 минут назад
+    # Set a baseline with a timestamp from 25 minutes ago.
     old_time = datetime.utcnow() - timedelta(minutes=25)
     detector._snapshots["job-001"] = JobSnapshot(
         job_id="job-001",
         name="test_job",
-        progress=50.0,       # прогресс не изменился
-        output_dir="",       # нет output_dir → _new_files_exist вернёт True
+        progress=50.0,       # Progress has not changed.
+        output_dir="",       # If output_dir is missing, _new_files_exist will return True.
         worker="render-node-01",
         timestamp=old_time,
     )
     detector._history["job-001"] = StallHistory(job_id="job-001")
 
-    # output_dir пустой → _new_files_exist возвращает True (недоступна),
-    # значит зависание не будет зафиксировано. Используем несуществующую папку.
+    # output_dir is empty -> _new_files_exist returns True (unavailable),
+    # meaning the freeze won't be recorded. We use a non-existent folder.
     con2 = _make_con(jobs=[_make_job(progress=50.0, output_dir="C:/nonexistent_12345")])
     detector.con = con2
 
@@ -78,7 +78,7 @@ def test_stalled_no_progress_no_files():
 
 
 def test_not_stalled_progress_moved():
-    """Снапшот 25 минут назад, прогресс +15% → не зависший."""
+    """Snapshot 25 minutes ago, +15% progress -> not hung."""
     con = _make_con(jobs=[_make_job(progress=65.0)])
     detector = StallDetector(con=con, stall_threshold_min=20)
 
@@ -86,7 +86,7 @@ def test_not_stalled_progress_moved():
     detector._snapshots["job-001"] = JobSnapshot(
         job_id="job-001",
         name="test_job",
-        progress=50.0,       # было 50%
+        progress=50.0,       # It was 50%
         output_dir="",
         worker="render-node-01",
         timestamp=old_time,
@@ -95,11 +95,11 @@ def test_not_stalled_progress_moved():
 
     result = detector.check()
 
-    assert result == [], "Прогресс двигается — зависания нет"
+    assert result == [], "Progress is moving forward - no freezing."
 
 
 def test_stall_count_increments():
-    """Два последовательных stall → stall_count = 2."""
+    """Two consecutive stalls -> stall_count = 2."""
     con = _make_con(jobs=[_make_job(progress=50.0, output_dir="C:/nonexistent_12345")])
     detector = StallDetector(con=con, stall_threshold_min=20)
 
@@ -118,7 +118,7 @@ def test_stall_count_increments():
 
 
 def test_threshold_not_reached_yet():
-    """Прошло только 5 минут при threshold=20 → пропускаем проверку."""
+    """Only 5 minutes have passed with threshold=20 -> skipping the check."""
     con = _make_con(jobs=[_make_job(progress=50.0)])
     detector = StallDetector(con=con, stall_threshold_min=20)
 
@@ -132,4 +132,4 @@ def test_threshold_not_reached_yet():
 
     result = detector.check()
 
-    assert result == [], "Порог не достигнут — зависание не должно регистрироваться"
+    assert result == [], "Threshold not reached - hang should not be logged."

@@ -1,4 +1,4 @@
-"""Unit tests for recovery.handle_stall() — без реального Deadline."""
+"""Unit tests for recovery.handle_stall() - without a real Deadline."""
 from __future__ import annotations
 
 from unittest.mock import MagicMock, call
@@ -39,7 +39,7 @@ def _make_notifier():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_tier1_requeue():
-    """stall_count=1 → RequeueJob вызван, warn отправлен."""
+    """stall_count=1 -> RequeueJob called, warn sent."""
     con = _make_con()
     notifier = _make_notifier()
     history = _make_history(stall_count=1)
@@ -53,7 +53,7 @@ def test_tier1_requeue():
 
 
 def test_tier2_blacklist_and_requeue():
-    """stall_count=2 → SetJobMachineBlacklist + RequeueJob вызваны."""
+    """stall_count=2 -> SetJobMachineBlacklist + RequeueJob called."""
     con = _make_con()
     notifier = _make_notifier()
     history = _make_history(stall_count=2, worker="render-node-01")
@@ -67,7 +67,7 @@ def test_tier2_blacklist_and_requeue():
 
 
 def test_tier3_suspend():
-    """stall_count=3 → SuspendJob вызван, critical отправлен."""
+    """stall_count=3 -> SuspendJob called, critical sent."""
     con = _make_con()
     notifier = _make_notifier()
     history = _make_history(stall_count=3)
@@ -81,7 +81,7 @@ def test_tier3_suspend():
 
 
 def test_tier2_no_worker_skips_blacklist():
-    """stall_count=2, worker=None → blacklist не вызывается, requeue всё равно."""
+    """stall_count=2, worker=None -> The blacklist isn't being called; it gets requeued anyway."""
     con = _make_con()
     notifier = _make_notifier()
     history = _make_history(stall_count=2, worker=None)

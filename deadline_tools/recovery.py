@@ -1,10 +1,10 @@
-"""Recovery actions — три тира эскалации.
+"""Recovery actions - three tiers of escalation.
 
-handle_stall(con, history, job, notifier) → action_string
+handle_stall(con, history, job, notifier) -> action_string
 
-  stall_count == 1  →  requeue + warn
-  stall_count == 2  →  requeue + SetJobMachineBlacklist + warn
-  stall_count >= 3  →  SuspendJob + critical
+  stall_count == 1  ->  requeue + warn
+  stall_count == 2  ->  requeue + SetJobMachineBlacklist + warn
+  stall_count >= 3  ->  SuspendJob + critical
 """
 from __future__ import annotations
 
@@ -18,15 +18,15 @@ log = logging.getLogger(__name__)
 
 def handle_stall(con, history: StallHistory, job: dict, notifier) -> str:
     """
-    Выполнить recovery-действие согласно тиру эскалации.
-    Возвращает строку действия для логирования.
+    Perform a recovery action in accordance with the escalation tier.
+    Returns the action string for logging.
     """
     job_name = job.get("Props", {}).get("Name", history.job_id)
     worker: Optional[str] = history.last_snapshot.worker if history.last_snapshot else None
 
     if history.stall_count == 1:
         _requeue(con, history.job_id, job_name)
-        notifier.warn(f"STALLED: {job_name} — requeue attempt 1")
+        notifier.warn(f"STALLED: {job_name} - requeue attempt 1")
         return "requeued"
 
     elif history.stall_count == 2:
@@ -34,14 +34,14 @@ def handle_stall(con, history: StallHistory, job: dict, notifier) -> str:
             _blacklist_worker(con, history.job_id, worker, job_name)
         _requeue(con, history.job_id, job_name)
         notifier.warn(
-            f"STALLED AGAIN: {job_name} — blacklisted {worker or 'unknown'}, requeue attempt 2"
+            f"STALLED AGAIN: {job_name} - blacklisted {worker or 'unknown'}, requeue attempt 2"
         )
         return "requeued+blacklisted"
 
     else:  # stall_count >= 3
         _suspend(con, history.job_id, job_name)
         notifier.critical(
-            f"SCENE ISSUE: {job_name} — suspended after {history.stall_count} workers. "
+            f"SCENE ISSUE: {job_name} - suspended after {history.stall_count} workers. "
             f"Manual review needed."
         )
         return "suspended"
@@ -58,7 +58,7 @@ def _requeue(con, job_id: str, job_name: str):
 
 
 def _blacklist_worker(con, job_id: str, worker: str, job_name: str):
-    """Добавить воркера в per-job machine blacklist (не трогает глобальные пулы)."""
+    """Add a worker to the per-job machine blacklist (does not affect global pools)."""
     try:
         current = con.Jobs.GetJobMachineBlacklist(job_id) or []
         if worker not in current:
