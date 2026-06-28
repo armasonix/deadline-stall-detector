@@ -35,7 +35,7 @@ flowchart TD
     K -- Yes --> L["Reset stall_count\nUpdate snapshot"]
     K -- No --> M["StallHistory\nstall_count++"]
     M --> N{stall_count?}
-    N -- 1 --> O["RequeueJob\n→ any worker"]
+    N -- 1 --> O["RequeueJob\n-> any worker"]
     N -- 2 --> P["SetJobMachineBlacklist\n+ RequeueJob"]
     N -- ">=3" --> Q["SuspendJob\n+ escalate"]
     O & P & Q --> R["TelegramNotifier\nwarn / critical"]
@@ -48,7 +48,7 @@ flowchart TD
 
 | Stall # | Action | Telegram |
 |---------|--------|----------|
-| 1 | `RequeueJob` → any available worker | ⚠️ STALLED: {job} — requeue attempt 1 |
+| 1 | `RequeueJob` -> any available worker | ⚠️ STALLED: {job} — requeue attempt 1 |
 | 2 | Blacklist previous worker + `RequeueJob` | ⚠️ STALLED AGAIN: {job} — blacklisting {worker} |
 | >= 3 | `SuspendJob` — likely scene issue | 🚨 SCENE ISSUE: {job} — suspended, manual review needed |
 
@@ -93,7 +93,7 @@ deadline-stall-detector/
 
 ### Environment Variables
 
-Copy `.env.example` → `.env` and fill in your values. **Never commit `.env`.**
+Copy `.env.example` -> `.env` and fill in your values. **Never commit `.env`.**
 
 ```bash
 DEADLINE_HOST=localhost
@@ -106,7 +106,7 @@ STALL_THRESHOLD_MIN=20
 ```
 
 ### Enable Deadline WebService
-Deadline Monitor → Tools → Configure Repository Options → Web Service → Enable
+Deadline Monitor -> Tools -> Configure Repository Options -> Web Service -> Enable
 
 
 text
@@ -139,11 +139,11 @@ python -m deadline_tools --log-level DEBUG
 Deadline Stall Monitor — watchdog mode (threshold=20m · poll=60s)
 ──────────────────────────────────────────
 14:31:02 Monitoring 12 active jobs...
-14:32:07 ⚠ STALLED: shot_042_beauty → requeue #1
-14:32:08 ✓ Requeued → render-node-05
+14:32:07 ⚠ STALLED: shot_042_beauty -> requeue #1
+14:32:08 ✓ Requeued -> render-node-05
 14:47:15 ⚠ STALLED AGAIN: shot_042_beauty
 14:47:16 🔴 Blacklisted: render-node-03
-14:47:16 ✓ Requeued → render-node-07
+14:47:16 ✓ Requeued -> render-node-07
 15:09:44 🚨 SUSPENDED: shot_042_beauty
 ```
 
