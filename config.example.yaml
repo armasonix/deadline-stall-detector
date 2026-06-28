@@ -1,31 +1,18 @@
-# deadline-stall-detector config
-# Copy to config.yaml and adjust values.
-# config.yaml is gitignored — never commit real credentials.
-
+# Deadline WebService connection
 deadline:
   host: localhost
-  port: 8081
-  repo_path: "C:\\DeadlineRepository10"
-  auth:
-    user: ""
-    password: ""
+  port: 8082
+  repo_path: C:\DeadlineRepository10
 
-detector:
-  poll_interval: 60
-  stall_threshold_polls: 5
-  watch_statuses:
-    - Rendering
-  blacklist_after: 3
-  blacklist_pools:
-    - vray_farm
-    - maya_farm
+# Stall detection settings
+monitor:
+  poll_interval_sec: 60
+  stall_threshold_min: 20
+  log_level: INFO
 
+# Telegram notifications (optional)
+# Set values here OR export as env vars:
+#   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 telegram:
-  enabled: false
   bot_token: ""
   chat_id: ""
-  min_level: warning
-
-logging:
-  level: INFO
-  file: "logs/stall_detector.log"
