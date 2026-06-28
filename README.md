@@ -50,11 +50,12 @@ flowchart TD
 |---------|--------|----------|
 | 1 | `RequeueJob` → any available worker | ⚠️ STALLED: {job} — requeue attempt 1 |
 | 2 | Blacklist previous worker + `RequeueJob` | ⚠️ STALLED AGAIN: {job} — blacklisting {worker} |
-| ≥ 3 | `SuspendJob` — likely scene issue | 🚨 SCENE ISSUE: {job} — suspended, manual review needed |
+| >= 3 | `SuspendJob` — likely scene issue | 🚨 SCENE ISSUE: {job} — suspended, manual review needed |
 
 ---
 
 ## Project Structure
+```text
 deadline-stall-detector/
 ├── deadline_tools/
 │ ├── _init_.py
@@ -78,9 +79,7 @@ deadline-stall-detector/
 ├── config.example.yaml
 ├── requirements.txt
 └── .github/workflows/ci.yml
-
-
-text
+```
 
 ---
 
@@ -136,6 +135,7 @@ python -m deadline_tools --log-level DEBUG
 ```
 
 ### Watchdog Output
+```text
 Deadline Stall Monitor — watchdog mode (threshold=20m · poll=60s)
 ──────────────────────────────────────────
 14:31:02 Monitoring 12 active jobs...
@@ -145,9 +145,7 @@ Deadline Stall Monitor — watchdog mode (threshold=20m · poll=60s)
 14:47:16 🔴 Blacklisted: render-node-03
 14:47:16 ✓ Requeued → render-node-07
 15:09:44 🚨 SUSPENDED: shot_042_beauty
-
-
-text
+```
 
 ---
 
