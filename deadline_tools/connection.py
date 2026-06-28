@@ -29,7 +29,7 @@ def get_connection():
         )
 
     host = os.environ.get("DEADLINE_HOST", "localhost")
-    port = int(os.environ.get("DEADLINE_PORT", "8082"))
+    port = int(os.environ.get("DEADLINE_PORT", "8081"))
     return Connect.DeadlineCon(host, port)
 
 

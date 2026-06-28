@@ -1,17 +1,20 @@
 """Integration tests - full stall detection and recovery cycle.
 
-No live Deadline connection. Uses conftest fixtures with in-memory fakes.
+No live Deadline connection required. Uses conftest fixtures with in-memory fakes.
 """
 from __future__ import annotations
 
+from datetime import timedelta, timezone
 from unittest.mock import MagicMock
 
 from deadline_tools.recovery import handle_stall
-from deadline_tools.stall_detector import StallHistory
+
+
+UTC = timezone.utc
 
 
 def test_stall_detected_and_requeued(detector_with_stale_baseline, fake_con):
-    """Full cycle: detector finds a stall, recovery tier 1 requeues the job."""
+    """Full cycle: detector finds stall, recovery tier 1 requeues the job."""
     notifier = MagicMock()
 
     stalled = detector_with_stale_baseline.check()
@@ -37,8 +40,11 @@ def test_second_stall_blacklists_worker(detector_with_stale_baseline, fake_con):
     stalled = detector_with_stale_baseline.check()
     assert stalled[0].stall_count == 1
 
-    # Simulate another 25-minute gap by updating the snapshot timestamp
-    from datetime import timedelta, timezone
+    # Plant a known worker into failed_workers so tier 2 has something to blacklist
+    stalled[0].last_snapshot.worker = "render-node-01"
+    stalled[0].failed_workers = ["render-node-01"]
+
+    # Roll back snapshot timestamp to simulate another 25-minute gap
     snap = detector_with_stale_baseline._snapshots["job-001"]
     snap.timestamp = snap.timestamp - timedelta(minutes=25)
 
@@ -47,7 +53,8 @@ def test_second_stall_blacklists_worker(detector_with_stale_baseline, fake_con):
     assert len(stalled2) == 1
     assert stalled2[0].stall_count == 2
 
-    job_dict = fake_con.Jobs.GetJob("job-001")
+    job_dict = {"_id": "job-001", "Props": {"Name": "test_job"},
+                "MachineName": "render-node-01"}
     action = handle_stall(fake_con, stalled2[0], job_dict, notifier)
 
     assert action == "requeued+blacklisted"

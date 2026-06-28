@@ -1,7 +1,7 @@
 # Deadline WebService connection
 deadline:
   host: localhost
-  port: 8082
+  port: 8081
   repo_path: C:\DeadlineRepository10
 
 # Stall detection settings
