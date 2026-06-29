@@ -45,18 +45,18 @@ def handle_stall(
         if worker:
             # Get current blacklist, append, set back
             try:
-                existing: list[str] = list(
-                    con.Jobs.GetJobMachineBlacklist(job_id) or []
-                )
+                machine_limit = con.Jobs.GetJobMachineLimit(job_id)
+                existing: list[str] = list(machine_limit.get("SlaveList", []) or [])
             except Exception:
                 existing = []
             if worker not in existing:
                 existing.append(worker)
-            con.Jobs.SetJobMachineBlacklist(job_id, existing)
+            # limit=0 = no limit, whiteListFlag=False = blacklist
+            con.Jobs.SetJobMachineLimit(job_id, 0, existing, False)
         con.Jobs.RequeueJob(job_id)
         if notifier:
             notifier.warn(
-                f"⚠️ STALLED AGAIN: *{job_name}* — blacklisting `{worker}` + requeue"
+                f"⚠️⚠️ STALLED AGAIN: *{job_name}* — blacklisting `{worker}` + requeue"
             )
         return "requeued+blacklisted"
 

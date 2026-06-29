@@ -2,3 +2,6 @@ pytest>=8.0
 pytest-mock>=3.0
 pyyaml>=6.0
 rich>=13.0
+python-dotenv
+requests[socks]
+PySocks

@@ -116,8 +116,16 @@ class StallDetector:
 
     # -- private --------------------------------------------------------------
 
+    # Deadline 10 Job.Stat codes (top-level field, NOT inside Props):
+    #   1 = Active   (queued / rendering / pending)
+    #   2 = Suspended
+    #   3 = Completed
+    #   4 = Failed
+    #   6 = Pending
+    _ACTIVE_STAT = 1
+
     def _fetch_rendering_jobs(self) -> List[JobSnapshot]:
-        """Fetch jobs with Rendering status from Deadline (Stat=3 in API v10)."""
+        """Fetch Active jobs (Stat=1) as candidates for stall checking."""
         try:
             jobs = self.con.Jobs.GetJobs()
         except Exception as exc:
@@ -126,19 +134,26 @@ class StallDetector:
 
         result = []
         for job in jobs:
-            props = job.get("Props", {})
-            if props.get("Stat", -1) != 3:
+            stat = job.get("Stat", job.get("Props", {}).get("Stat", -1))
+            if stat != self._ACTIVE_STAT:
                 continue
 
+            props = job.get("Props", {}) or {}
             job_id = job.get("_id", "")
-            output_dirs = props.get("OutDir", [])
+
+            output_dirs = job.get("OutDir") or props.get("OutDir") or []
             output_dir = output_dirs[0] if output_dirs else ""
 
-            completed = props.get("Comp", 0)
-            total = max(props.get("Tasks", 1), 1)
+            completed = job.get("CompletedChunks", props.get("Comp", 0))
+            total = max(int(props.get("Tasks", 1) or 1), 1)
             progress = round(completed / total * 100, 2)
 
             worker = self._get_active_worker(job_id)
+
+            log.debug(
+                "Job snapshot: id=%s name=%s stat=%s progress=%.1f%% out=%s worker=%s",
+                job_id, props.get("Name", job_id), stat, progress, output_dir, worker,
+            )
 
             result.append(JobSnapshot(
                 job_id=job_id,
@@ -150,15 +165,61 @@ class StallDetector:
 
         return result
 
+    # Deadline 10 Task.Stat codes (same scheme as Job.Stat but per-task):
+    #   1 = Queued
+    #   2 = Rendering
+    #   3 = Suspended
+    #   4 = Completed
+    #   5 = Failed
+    #   8 = Pending
+    _TASK_STAT_RENDERING = 2
+
     def _get_active_worker(self, job_id: str) -> Optional[str]:
-        """Return the name of the worker currently rendering a task for this job."""
+        """Return the name of the worker currently rendering a task for this job.
+
+        Falls back to any task that has a Slave assigned if no Rendering task
+        is found (useful when the job just stalled and task state is stale).
+        """
         try:
-            for task in self.con.Tasks.GetJobTasks(job_id):
-                if task.get("Stat", "") == "Rendering":
-                    return task.get("SlaveRend") or None
-        except Exception:
-            pass
-        return None
+            tasks = self.con.Tasks.GetJobTasks(job_id)
+        except Exception as exc:
+            log.debug("GetJobTasks(%s) failed: %s", job_id, exc)
+            return None
+
+        # tasks may be a list or {"Tasks": [...]} dict depending on API version
+        if isinstance(tasks, dict):
+            tasks = tasks.get("Tasks", []) or []
+
+        rendering_worker = None
+        any_worker = None
+
+        for task in tasks:
+            # Possible worker field names across Deadline versions:
+            worker = (
+                task.get("Slave")
+                or task.get("SlaveRend")
+                or task.get("Worker")
+                or task.get("RendSlave")
+                or task.get("Mach")
+            )
+            if not worker:
+                continue
+
+            stat = task.get("Stat")
+            # Accept both numeric (Stat=2) and string ("Rendering") representations
+            is_rendering = stat == self._TASK_STAT_RENDERING or stat == "Rendering"
+
+            if is_rendering and rendering_worker is None:
+                rendering_worker = worker
+            if any_worker is None:
+                any_worker = worker
+
+            log.debug(
+                "Task for job %s: stat=%r worker=%r keys=%s",
+                job_id, stat, worker, sorted(task.keys())[:10],
+            )
+
+        return rendering_worker or any_worker
 
     def _new_files_exist(self, output_dir: str, since: datetime) -> bool:
         """

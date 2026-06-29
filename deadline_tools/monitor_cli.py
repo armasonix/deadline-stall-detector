@@ -1,8 +1,8 @@
 """Rich CLI for the stall monitor.
 
 Two modes:
-  default        — quiet watchdog: scrolling event log
-  --dashboard    — live rich table with spinner + hotkeys [r] [s] [q]
+  default        - quiet watchdog: scrolling event log
+  --dashboard    - live rich table with spinner + hotkeys [r] [s] [q]
 """
 from __future__ import annotations
 
@@ -33,9 +33,10 @@ console = Console()
 
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SEC", "60"))
 STALL_THRESHOLD = int(os.environ.get("STALL_THRESHOLD_MIN", "20"))
+_RUNTIME_POLL = POLL_INTERVAL  # overridden by --poll in main()
 
 
-# ── helpers ────────────────────────────────────────────────────────────────────
+# -- helpers --------------------------------------------------------------------
 
 def _stall_counter_text(count: int, threshold: int = 3) -> Text:
     label = f"{count}/{threshold}"
@@ -51,11 +52,11 @@ def _stall_counter_text(count: int, threshold: int = 3) -> Text:
 def _status_text(status: str) -> Text:
     s = status.upper()
     if s == "OK":
-        return Text("● OK", style="green")
+        return Text("[ OK ]", style="green")
     if "STALL" in s:
-        return Text("⚠  STALLED", style="bold yellow")
+        return Text("[STALL]", style="bold yellow")
     if "SUSPEND" in s:
-        return Text("🚨 SUSPENDED", style="bold red blink")
+        return Text("[SUSP ]", style="bold red blink")
     return Text(s, style="dim")
 
 
@@ -63,7 +64,7 @@ def _now() -> str:
     return datetime.now().strftime("%H:%M:%S")
 
 
-# ── dashboard mode ─────────────────────────────────────────────────────────────
+# -- dashboard mode -------------------------------------------------------------
 
 def _build_table(job_states: dict) -> Table:
     table = Table(
@@ -83,21 +84,21 @@ def _build_table(job_states: dict) -> Table:
             info.get("name", job_id),
             _status_text(info.get("status", "ok")),
             _stall_counter_text(info.get("stall_count", 0)),
-            info.get("worker") or "—",
-            info.get("since", "—"),
+            info.get("worker") or "-",
+            info.get("since", "-"),
         )
     return table
 
 
 def run_dashboard(detector: StallDetector, notifier: TelegramNotifier) -> None:
-    """Live rich dashboard — refreshes every POLL_INTERVAL seconds."""
+    """Live rich dashboard - refreshes every POLL_INTERVAL seconds."""
     job_states: dict = {}
-    spinner_frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    spinner_frames = "|/-\\"
     frame = 0
 
     console.print(
-        f"\n[bold cyan]╔═ Deadline Stall Monitor ══ dashboard mode ══ "
-        f"threshold={STALL_THRESHOLD}m · poll={POLL_INTERVAL}s ═╗[/]"
+        f"\n[bold cyan]+= Deadline Stall Monitor == dashboard mode == "
+        f"threshold={STALL_THRESHOLD}m * poll={POLL_INTERVAL}s =+[/]"
     )
     console.print("[dim]  [r] force requeue  [s] suspend  [q] quit[/]\n")
 
@@ -127,9 +128,10 @@ def run_dashboard(detector: StallDetector, notifier: TelegramNotifier) -> None:
                         "since": _now(),
                     }
 
-                # Refresh known OK jobs
+                # Refresh known OK jobs (Stat=1 means Active in Deadline 10)
                 try:
-                    all_jobs = detector._con.Jobs.GetJobsInState(3) or []
+                    raw = detector._con.Jobs.GetJobs() or []
+                    all_jobs = [j for j in raw if j.get("Stat", -1) == 1]
                     for j in all_jobs:
                         jid = j.get("_id", "")
                         if jid not in job_states:
@@ -138,7 +140,7 @@ def run_dashboard(detector: StallDetector, notifier: TelegramNotifier) -> None:
                                 "status": "ok",
                                 "stall_count": 0,
                                 "worker": j.get("MachineName"),
-                                "since": "—",
+                                "since": "-",
                             }
                 except Exception:
                     pass
@@ -152,19 +154,19 @@ def run_dashboard(detector: StallDetector, notifier: TelegramNotifier) -> None:
                 live.update(Text.from_markup(header + "\n") if not job_states
                             else table)
 
-                time.sleep(POLL_INTERVAL)
+                time.sleep(_RUNTIME_POLL)
 
     except KeyboardInterrupt:
         console.print("\n[dim]Monitor stopped.[/]")
 
 
-# ── watchdog mode (default) ────────────────────────────────────────────────────
+# -- watchdog mode (default) ----------------------------------------------------
 
 def run_watchdog(detector: StallDetector, notifier: TelegramNotifier) -> None:
-    """Quiet scrolling log — default mode."""
+    """Quiet scrolling log - default mode."""
     console.print(
-        f"[bold cyan] Deadline Stall Monitor[/] — watchdog mode  "
-        f"[dim](threshold={STALL_THRESHOLD}m · poll={POLL_INTERVAL}s)[/]"
+        f"[bold cyan] Deadline Stall Monitor[/] - watchdog mode  "
+        f"[dim](threshold={STALL_THRESHOLD}m * poll={POLL_INTERVAL}s)[/]"
     )
     console.rule(style="dim cyan")
 
@@ -172,7 +174,8 @@ def run_watchdog(detector: StallDetector, notifier: TelegramNotifier) -> None:
         while True:
             ts = _now()
             try:
-                active = detector._con.Jobs.GetJobsInState(3) or []
+                raw = detector._con.Jobs.GetJobs() or []
+                active = [j for j in raw if j.get("Stat", -1) == 1]
                 count = len(active)
             except Exception:
                 count = "?"
@@ -191,44 +194,48 @@ def run_watchdog(detector: StallDetector, notifier: TelegramNotifier) -> None:
                                 "MachineName": None}
 
                 name = job_dict.get("Props", {}).get("Name", history.job_id)
-                worker = job_dict.get("MachineName")
+                worker = (
+                    job_dict.get("MachineName")
+                    or (history.last_snapshot.worker if history.last_snapshot else None)
+                )
                 sc = history.stall_count
 
                 if sc >= 3:
                     console.print(
-                        f" [dim]{ts}[/]  [bold red blink]🚨 SUSPENDED: {name}[/]"
+                        f" [dim]{ts}[/]  [bold red blink][SUSP ]: {name}[/]"
                     )
                 elif sc == 2:
                     console.print(
-                        f" [dim]{ts}[/]  [bold yellow]⚠  STALLED AGAIN: {name}[/]"
+                        f" [dim]{ts}[/]  [bold yellow][STALL] AGAIN: {name}[/]"
                     )
                     console.print(
-                        f" [dim]{ts}[/]  [bold red]🔴 Blacklisted: {worker or '?'}[/]"
+                        f" [dim]{ts}[/]  [bold red][BLKLST ] worker={worker or '?'}[/]"
                     )
                 else:
                     console.print(
-                        f" [dim]{ts}[/]  [yellow]⚠  STALLED: {name} → requeue #{sc}[/]"
+                        f" [dim]{ts}[/]  [yellow][STALL]: {name} → requeue #{sc}[/]"
                     )
 
                 action = handle_stall(con, history, job_dict, notifier)
 
                 if "requeue" in action:
                     console.print(
-                        f" [dim]{ts}[/]  [green]✓  Requeued → {worker or 'next available'}[/]"
+                        f" [dim]{ts}[/]  [green][REQUE  ] -> {worker or 'next available'}[/]"
                     )
 
-            time.sleep(POLL_INTERVAL)
+            time.sleep(_RUNTIME_POLL)
 
     except KeyboardInterrupt:
         console.print("\n[dim]Monitor stopped.[/]")
 
 
-# ── entrypoint ─────────────────────────────────────────────────────────────────
+# -- entrypoint -----------------------------------------------------------------
 
 def main() -> None:
+    global POLL_INTERVAL, STALL_THRESHOLD, _RUNTIME_POLL
     parser = argparse.ArgumentParser(
         prog="deadline-monitor",
-        description="Deadline stall watchdog — detects hung jobs and auto-recovers.",
+        description="Deadline stall watchdog - detects hung jobs and auto-recovers.",
     )
     parser.add_argument(
         "--dashboard", action="store_true",
@@ -249,6 +256,10 @@ def main() -> None:
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
     )
     args = parser.parse_args()
+
+    POLL_INTERVAL = args.poll
+    STALL_THRESHOLD = args.threshold
+    _RUNTIME_POLL = args.poll
 
     logging.basicConfig(
         level=getattr(logging, args.log_level),
