@@ -17,7 +17,7 @@ On a render farm with **20+** nodes, **Maya**, **V-Ray**, **Redshift**, and othe
 - Polls the Deadline WebService at a configurable interval.
 - Detects a **stall** only when **both signals** are missing: no progress change **and** no new files written to disk.
 - Separates **actively rendering** jobs from jobs that are simply queued, such as jobs blacklisted from the only available worker and waiting for a free machine.
-- Applies automatic escalation by blacklisting the stalled worker before suspending the job.
+- Applies automatic escalation by requeueing first, blacklisting the stalled worker on the second confirmed stall, and suspending only after repeated stalls.
 
 ---
 
@@ -46,7 +46,7 @@ On a render farm with **20+** nodes, **Maya**, **V-Ray**, **Redshift**, and othe
 | 2 | Blacklist previous worker (`SetJobMachineLimit`) + `RequeueJob` | STALLED AGAIN: {job} — blacklisting {worker} |
 | >= 3 | `SuspendJob` — likely scene issue | SCENE ISSUE: {job} — suspended, manual review needed |
 
-On a single-machine farm, when the only worker is already blacklisted, the tier-3 suspend is **skipped** for that job so it stays queued instead of being suspended off the farm entirely.
+On a single-machine farm, when the same worker has already been blacklisted and there is no fresh rendering worker to blame, the tier-3 suspend is **skipped** for that job so it stays queued instead of being suspended off the farm entirely.
 
 ---
 
@@ -76,7 +76,7 @@ deadline-stall-detector/
 ├── .github/workflows/ci.yml
 ├── terminal-profile.json    # Windows Terminal dark profile
 ├── pyproject.toml
-├── config.example.yaml
+├── config.example.yaml    # reference config values; runtime reads environment variables
 ├── .env.example
 └── requirements.txt
 ```
@@ -126,7 +126,7 @@ Verify with: `curl http://localhost:8081/api/jobs`
 # Quiet watchdog (default): scrolling event log
 python -m deadline_tools
 
-# Live dashboard: single fixed header non-scrolling interface with hotkeys, 
+# Live dashboard: single fixed-header, non-scrolling interface with hotkeys 
 python -m deadline_tools --dashboard
 
 # Custom threshold and poll interval
@@ -136,19 +136,19 @@ python -m deadline_tools --threshold 15 --poll 30
 python -m deadline_tools --log-level DEBUG
 python -m deadline_tools --log-level INFO
 
-# help
-python -m deadline_tools -help
+# Help
+python -m deadline_tools --help
 ```
 
 ### Dashboard
 
-A n**on-scrolling** interface for managing stalled jobs, adjusting the poll interval, and using hotkeys.
+A **non-scrolling** interface for managing stalled jobs, viewing progress, and using hotkeys. The poll interval and stall threshold are set at startup with CLI flags or environment variables.
 
 Hotkeys:
 
 #### Hotkeys: 
-- `R` Requeue,
-- `S` Suspend,
+- `R` Requeue all currently actionable stalled, rendering, or queued rows.
+- `S` Suspend all currently actionable stalled, rendering, or queued rows.
 - `Q` Quit.
 
 ### Watchdog Output
@@ -156,7 +156,7 @@ Hotkeys:
 A scrolling monitor mode that keeps job status updated **row by row**.
 
 ```text
-Deadline Stall Monitor - watchdog mode (threshold=20m, poll=60s)
+Deadline Stall Monitor v1.x — watchdog mode (threshold=20m, poll=60s)
 ------------------------------------------------------------
 14:31:02  Monitoring 12 active jobs...
 14:32:07  [STALL]: shot_042_beauty requeue #1
@@ -188,7 +188,7 @@ python -m pytest tests -v
 python -m pytest tests --cov=deadline_tools --cov-report=term-missing
 ```
 
-18 tests: 16 unit + 2 integration, all mock-based.
+29 tests: 27 unit + 2 integration, all mock-based.
 
 ---
 

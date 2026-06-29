@@ -204,3 +204,22 @@ def test_queued_job_does_not_stall(tmp_path):
     result = detector.check()
 
     assert result == []
+
+
+def test_current_worker_already_failed_tracks_prior_blacklist_state(tmp_path):
+    """A third stall on a new worker must still be eligible for suspension;
+    only a stall on a worker that was already in failed_workers before this
+    check should be treated as the single-worker/no-fresh-worker case."""
+    empty_dir = str(tmp_path)
+    con = _make_con(jobs=[_make_job(progress=50.0, output_dir=empty_dir, worker="render-node-02")])
+    detector = StallDetector(con=con, stall_threshold_min=20)
+    _set_baseline(detector, progress=50.0, output_dir=empty_dir, worker="render-node-02")
+    detector._history["job-001"].stall_count = 2
+    detector._history["job-001"].failed_workers = ["render-node-01"]
+
+    result = detector.check()
+
+    assert len(result) == 1
+    assert result[0].stall_count == 3
+    assert result[0].failed_workers == ["render-node-01", "render-node-02"]
+    assert result[0].current_worker_already_failed is False

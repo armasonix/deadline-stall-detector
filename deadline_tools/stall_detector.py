@@ -42,6 +42,7 @@ class StallHistory:
     stall_count: int = 0
     failed_workers: List[str] = field(default_factory=list)
     last_snapshot: Optional[JobSnapshot] = None
+    current_worker_already_failed: bool = False
 
 
 @dataclass
@@ -108,6 +109,9 @@ class StallDetector:
                 history = self._history[snap.job_id]
                 history.stall_count += 1
                 history.last_snapshot = snap
+                history.current_worker_already_failed = (
+                    bool(snap.worker) and snap.worker in history.failed_workers
+                )
 
                 if snap.worker and snap.worker not in history.failed_workers:
                     history.failed_workers.append(snap.worker)

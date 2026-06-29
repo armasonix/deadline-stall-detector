@@ -98,9 +98,9 @@ def _should_suspend(history, job_states: dict) -> bool:
     failed = set(history.failed_workers)
     if not failed:
         return True
-    info   = job_states.get(history.job_id, {})
+    info = job_states.get(history.job_id, {})
     worker = info.get("worker")
-    return worker not in failed
+    return not (worker in failed and history.current_worker_already_failed)
 
 
 # ---------------------------------------------------------------------------
@@ -478,7 +478,7 @@ def run_dashboard(detector: StallDetector, notifier: TelegramNotifier) -> None:
 def run_watchdog(detector: StallDetector, notifier: TelegramNotifier) -> None:
     console.print(
         f"[bold cyan] Deadline Stall Monitor {APP_VERSION_LABEL}[/] — watchdog mode  "
-        f"[dim](threshold={STALL_THRESHOLD}m * poll={POLL_INTERVAL}s)[/]"
+        f"[dim](threshold={STALL_THRESHOLD}m, poll={POLL_INTERVAL}s)[/]"
     )
     console.rule(style="dim cyan")
 
@@ -512,6 +512,21 @@ def run_watchdog(detector: StallDetector, notifier: TelegramNotifier) -> None:
                 sc = history.stall_count
 
                 if sc >= 3:
+                    if (
+                        worker
+                        and worker in history.failed_workers
+                        and history.current_worker_already_failed
+                    ):
+                        log.info(
+                            "Skipping tier-3 suspend for %s: worker %s is already blacklisted.",
+                            history.job_id,
+                            worker,
+                        )
+                        console.print(
+                            f" [dim]{ts}[/]  [cyan][QUEUE]: {name} remains queued; "
+                            f"worker {worker} already blacklisted[/]"
+                        )
+                        continue
                     console.print(f" [dim]{ts}[/]  [bold red][SUSP ]: {name}[/]")
                 elif sc == 2:
                     console.print(f" [dim]{ts}[/]  [bold yellow][STALL] AGAIN: {name}[/]")

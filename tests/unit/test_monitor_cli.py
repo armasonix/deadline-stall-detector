@@ -144,3 +144,24 @@ def test_dashboard_suspend_hotkey_calls_deadline_for_rendering_row_without_stall
     detector._con.Jobs.SuspendJob.assert_called_once_with("job-003")
     assert state.job_states["job-003"]["status"] == "suspended"
     assert state.job_states["job-003"]["dl_status"] == "Suspended"
+
+def test_should_suspend_new_worker_even_after_history_records_it():
+    from deadline_tools.monitor_cli import _should_suspend
+    from deadline_tools.stall_detector import StallHistory
+
+    history = StallHistory(job_id="job-006", stall_count=3)
+    history.failed_workers = ["render-01", "render-02"]
+    history.current_worker_already_failed = False
+
+    assert _should_suspend(history, {"job-006": {"worker": "render-02"}}) is True
+
+
+def test_should_not_suspend_when_current_worker_was_already_failed():
+    from deadline_tools.monitor_cli import _should_suspend
+    from deadline_tools.stall_detector import StallHistory
+
+    history = StallHistory(job_id="job-007", stall_count=3)
+    history.failed_workers = ["render-01"]
+    history.current_worker_already_failed = True
+
+    assert _should_suspend(history, {"job-007": {"worker": "render-01"}}) is False
