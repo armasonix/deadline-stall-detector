@@ -7,6 +7,8 @@ Two modes:
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import logging
 import os
 import sys
@@ -16,7 +18,6 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
 
 from rich.console import Console, Group
-from rich.live import Live
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
@@ -307,11 +308,13 @@ def run_dashboard(detector: StallDetector, notifier: TelegramNotifier) -> None:
     frame    = 0
 
     # A dedicated console for the dashboard. force_terminal=True makes Rich
-    # emit real control codes (cursor moves + alternate screen) even when it
-    # cannot auto-detect a TTY - this is the case under Git Bash / MinTTY and
-    # some PowerShell hosts, where the previous auto-detected fallback printed
-    # the header again on every refresh (the "many headers" bug).
-    dash_console = Console(force_terminal=True)
+    # emit real control codes even when it cannot auto-detect a TTY (for
+    # example Git Bash / MinTTY and some PowerShell hosts). The dashboard is
+    # intentionally redrawn as one full-screen frame below instead of relying
+    # on Rich Live's line-diff refresh: clearing the alternate screen on every
+    # tick is a little more brute-force, but it prevents stale header rows from
+    # surviving after stall events or terminal resize redraws.
+    dash_console = Console(force_terminal=True, file=sys.__stdout__)
 
     threading.Thread(
         target=_poll_worker,
@@ -334,14 +337,15 @@ def run_dashboard(detector: StallDetector, notifier: TelegramNotifier) -> None:
     )
 
     try:
-        with Live(
-            console=dash_console,
-            refresh_per_second=int(1 / TICK),
-            screen=True,        # alternate screen buffer: exactly one frame
-            transient=False,
-            redirect_stdout=True,   # swallow stray prints from any thread
-            redirect_stderr=True,   # keep logs out of the live region
-        ) as live:
+        # Alternate screen keeps the shell scrollback clean. Each iteration
+        # clears from a known home position before printing the next complete
+        # frame, so terminal resizes and bursty stall updates cannot leave
+        # duplicate headers behind.
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+            dash_console.screen(hide_cursor=True),
+        ):
             while True:
                 with state.lock:
                     while state.action_queue:
@@ -383,7 +387,8 @@ def run_dashboard(detector: StallDetector, notifier: TelegramNotifier) -> None:
                     else Text.from_markup("[dim]  Waiting for jobs...[/]")
                 )
 
-                live.update(Panel(
+                dash_console.clear(home=True)
+                dash_console.print(Panel(
                     Group(
                         Text.from_markup(HEADER),
                         Rule(style="dim cyan"),

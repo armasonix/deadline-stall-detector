@@ -1,8 +1,8 @@
 # Deadline Stall Detector
 
-Autonomous watchdog for **Thinkbox Deadline 10.x** render farms.
+An autonomous watchdog for **Thinkbox Deadline 10.x** render farm environments.
 
-Detects silently hung Maya + V-Ray jobs (progress frozen + no files written) and applies a **three-tier escalation** without human intervention. Operators receive Telegram alerts at each tier and can override at any time via the live dashboard or Deadline Monitor.
+This tool detects silently hung Maya, V-Ray, Redshift, and similar render jobs where progress has stopped and no new files are being written to disk. When a stall is confirmed, it automatically applies a **three-stage escalation** process without requiring human intervention. Operators receive Telegram alerts at each stage and can override the process at any time through the live dashboard or **Thinkbox Deadline Monitor**.
 
 [![CI](https://github.com/armasonix/deadline-stall-detector/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/armasonix/deadline-stall-detector/actions/workflows/ci.yml)
 
@@ -10,14 +10,14 @@ Detects silently hung Maya + V-Ray jobs (progress frozen + no files written) and
 
 ## The Problem
 
-On a 20-node render farm, Maya/V-Ray jobs occasionally hang silently — process alive, Deadline reports *Rendering*, progress frozen. Root causes vary: lost texture server connection, V-Ray hitting a memory ceiling, an unresponsive Alembic cache disk. The supervisor only discovers the lost render time on manual inspection, sometimes hours later.
+On a render farm with **20+** nodes, **Maya**, **V-Ray**, **Redshift**, and other rendering jobs can sometimes hang silently. The process may still be running, and Deadline may still show the job as **Rendering**, but the progress remains frozen. The cause can vary: a lost texture server connection, poor network stability, V-Ray reaching a memory limit, or an unresponsive Alembic cache disk. In many cases, the supervisor only notices the wasted render time during a manual check, sometimes hours later.
 
 ## What This Tool Does
 
-- Polls the Deadline WebService every N seconds (configurable).
-- Declares a **stall** only when **both signals** are absent: no progress movement **and** no new files on disk.
-- Distinguishes a job that a worker is **actively rendering** from one that is merely **queued** (for example, blacklisted off the only worker and waiting for a free machine). Only actively rendering jobs are eligible for stall detection.
-- Applies automatic escalation, blacklisting a stalling worker before suspending the job.
+- Polls the Deadline WebService at a configurable interval.
+- Detects a **stall** only when **both signals** are missing: no progress change **and** no new files written to disk.
+- Separates **actively rendering** jobs from jobs that are simply queued, such as jobs blacklisted from the only available worker and waiting for a free machine.
+- Applies automatic escalation by blacklisting the stalled worker before suspending the job.
 
 ---
 
@@ -110,7 +110,7 @@ pip install -e ".[dev]"   # runtime + test tooling
 
 ### Environment Variables
 
-Copy `.env.example` -> `.env` and fill in your values. **Never commit `.env`.**
+Create your own `.env` file by copying the template from `.env.example` to `.env`, then fill in your values.
 
 ```bash
 DEADLINE_HOST=localhost
@@ -118,7 +118,7 @@ DEADLINE_PORT=8081
 DEADLINE_REPO_PATH=C:\DeadlineRepository10
 TELEGRAM_BOT_TOKEN=        # from @BotFather - keep secret
 TELEGRAM_CHAT_ID=          # numeric chat id
-TELEGRAM_PROXY=            # optional: socks5h://host:port or http://host:port
+TELEGRAM_PROXY=            # optional: socks5h://host:port or http://user:pass@ip:port
 POLL_INTERVAL_SEC=60
 STALL_THRESHOLD_MIN=20
 ```
@@ -137,7 +137,7 @@ Verify with: `curl http://localhost:8081/api/jobs`
 # Quiet watchdog (default): scrolling event log
 python -m deadline_tools
 
-# Live dashboard: single fixed header, spinner only on rendering jobs
+# Live dashboard: single fixed header non-scrolling interface with hotkeys, 
 python -m deadline_tools --dashboard
 
 # Custom threshold and poll interval
@@ -145,16 +145,26 @@ python -m deadline_tools --threshold 15 --poll 30
 
 # Verbose logging
 python -m deadline_tools --log-level DEBUG
+python -m deadline_tools --log-level INFO
+
+# help
+python -m deadline_tools -help
 ```
 
 ### Dashboard
 
-- A **single** fixed header shows the active threshold, poll interval and hotkeys.
-- The header never duplicates on stall events or window resize (alternate-screen mode).
-- A spinner rotates **only** next to jobs Deadline reports as actively *Rendering*. Suspended and queued jobs show a static marker.
-- Hotkeys: `R` requeue, `S` suspend, `Q` quit.
+A n**on-scrolling** interface for managing stalled jobs, adjusting the poll interval, and using hotkeys.
+
+Hotkeys:
+
+#### Hotkeys: 
+- `R` requeue,
+- `S` suspend,
+- `Q` quit.
 
 ### Watchdog Output
+
+A scrolling monitor mode that keeps job status updated **row by row**.
 
 ```text
 Deadline Stall Monitor - watchdog mode (threshold=20m, poll=60s)
@@ -195,7 +205,7 @@ python -m pytest tests --cov=deadline_tools --cov-report=term-missing
 
 ## CI
 
-GitHub Actions runs the full test suite on Python 3.10 / 3.11 / 3.12 for every push and pull request to `dev` and `main`. See `.github/workflows/ci.yml`.
+GitHub Actions runs the full test suite on Python 3.10 / 3.11 / 3.12. See `.github/workflows/ci.yml`.
 
 ---
 
