@@ -20,3 +20,4 @@ Thumbs.db
 .idea/.env
 *.env
 logs/
+test_assets/reenders/
