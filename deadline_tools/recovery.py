@@ -4,6 +4,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from deadline_tools import event_log
+
 if TYPE_CHECKING:
     from deadline_tools.stall_detector import StallHistory
     from deadline_tools.notifier import TelegramNotifier
@@ -23,7 +25,8 @@ def handle_stall(
     # Worker comes from the live job_dict, not from StallHistory
     # (StallHistory.last_snapshot.worker can be None when API returns empty)
     worker: str | None = (
-        job_dict.get("MachineName")
+        job_dict.get("Mach")
+        or job_dict.get("MachineName")
         or (history.last_snapshot.worker if history.last_snapshot else None)
     )
     count: int = history.stall_count
@@ -36,6 +39,7 @@ def handle_stall(
                 f"🚨 SCENE ISSUE: *{job_name}* — suspended after {count} stalls. "
                 "Manual review needed."
             )
+        event_log.record("suspended", job_id, job_name, worker, count)
         return "suspended"
 
     if count == 2:
@@ -58,6 +62,7 @@ def handle_stall(
             notifier.warn(
                 f"⚠️⚠️ STALLED AGAIN: *{job_name}* — blacklisting `{worker}` + requeue"
             )
+        event_log.record("requeued+blacklisted", job_id, job_name, worker, count)
         return "requeued+blacklisted"
 
     # count == 1
@@ -65,4 +70,5 @@ def handle_stall(
     con.Jobs.RequeueJob(job_id)
     if notifier:
         notifier.warn(f"⚠️ STALLED: *{job_name}* — requeue attempt {count}")
+    event_log.record("requeued", job_id, job_name, worker, count)
     return "requeued"

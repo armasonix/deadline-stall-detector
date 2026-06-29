@@ -19,14 +19,26 @@ def _now() -> datetime:
 
 
 def _make_job_api(job_id="job-001", name="test_job", progress=50,
-                  output_dir="", stat=3):
+                  output_dir="", stat=1, worker="render-node-01",
+                  rendering=True):
+    # Stat is a TOP-LEVEL field; Stat=1 == Active. RenderingChunks > 0 marks
+    # the job as actively rendering (vs merely queued). Worker is in 'Mach'.
+    total = 100
+    remaining = max(total - progress, 0)
     return {
         "_id": job_id,
+        "Stat": stat,
+        "Mach": worker,
+        "CompletedChunks": progress,
+        "RenderingChunks": 1 if rendering else 0,
+        "QueuedChunks": (remaining - 1 if rendering else remaining),
+        "PendingChunks": 0,
+        "SuspendedChunks": 0,
+        "FailedChunks": 0,
         "Props": {
-            "Stat": stat,
             "Name": name,
             "Comp": progress,
-            "Tasks": 100,
+            "Tasks": total,
             "OutDir": [output_dir] if output_dir else [],
         },
     }
@@ -34,12 +46,12 @@ def _make_job_api(job_id="job-001", name="test_job", progress=50,
 
 @pytest.fixture()
 def fake_con():
-    """Deadline connection mock with a single stalled rendering job."""
+    """Deadline connection mock with a single rendering job."""
     con = MagicMock()
     con.Jobs.GetJobs.return_value = [_make_job_api()]
     con.Jobs.GetJob.return_value = _make_job_api()
-    con.Tasks.GetJobTasks.return_value = []
-    con.Jobs.GetJobMachineBlacklist.return_value = []
+    con.Tasks.GetJobTasks.return_value = [{"Slave": "render-node-01"}]
+    con.Jobs.GetJobMachineLimit.return_value = {"SlaveList": []}
     return con
 
 

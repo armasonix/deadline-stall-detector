@@ -1,26 +1,29 @@
-"""Unit tests for TelegramNotifier — no real HTTP calls."""
+"""Unit tests for TelegramNotifier - no real HTTP calls."""
 from __future__ import annotations
 
 from unittest.mock import patch, MagicMock
-import json
 
 from deadline_tools.notifier import TelegramNotifier
+
+
+def _ok_response():
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = {"ok": True}
+    return resp
 
 
 def test_send_called_with_correct_payload():
     notifier = TelegramNotifier(token="fake-token", chat_id="12345")
 
-    mock_resp = MagicMock()
-    mock_resp.read.return_value = json.dumps({"ok": True}).encode()
-    mock_resp.__enter__ = lambda s: s
-    mock_resp.__exit__ = MagicMock(return_value=False)
-
-    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_open:
-        result = notifier.warn("⚠️ test stall")
+    with patch("deadline_tools.notifier.requests.post",
+               return_value=_ok_response()) as mock_post:
+        result = notifier.warn("warn test stall")
 
     assert result is True
-    call_args = mock_open.call_args[0][0]
-    body = json.loads(call_args.data)
+    # payload is passed as json=...
+    _, kwargs = mock_post.call_args
+    body = kwargs["json"]
     assert body["chat_id"] == "12345"
     assert "test stall" in body["text"]
 
@@ -35,14 +38,24 @@ def test_no_token_returns_false():
 def test_api_error_returns_false():
     notifier = TelegramNotifier(token="fake-token", chat_id="12345")
 
-    mock_resp = MagicMock()
-    mock_resp.read.return_value = json.dumps(
-        {"ok": False, "description": "Unauthorized"}
-    ).encode()
-    mock_resp.__enter__ = lambda s: s
-    mock_resp.__exit__ = MagicMock(return_value=False)
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = {"ok": False, "description": "Unauthorized"}
 
-    with patch("urllib.request.urlopen", return_value=mock_resp):
+    with patch("deadline_tools.notifier.requests.post", return_value=resp):
+        result = notifier.warn("test")
+
+    assert result is False
+
+
+def test_http_error_returns_false():
+    notifier = TelegramNotifier(token="fake-token", chat_id="12345")
+
+    resp = MagicMock()
+    resp.status_code = 401
+    resp.text = "Unauthorized"
+
+    with patch("deadline_tools.notifier.requests.post", return_value=resp):
         result = notifier.warn("test")
 
     assert result is False

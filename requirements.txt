@@ -1,5 +1,6 @@
 pytest>=8.0
 pytest-mock>=3.0
+pytest-cov
 pyyaml>=6.0
 rich>=13.0
 python-dotenv

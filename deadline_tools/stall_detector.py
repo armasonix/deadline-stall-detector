@@ -31,6 +31,7 @@ class JobSnapshot:
     progress: float          # 0.0 - 100.0
     output_dir: str
     worker: Optional[str]
+    is_rendering: bool = True  # at least one task is actively Rendering
     timestamp: datetime = field(default_factory=_now)
 
 
@@ -65,6 +66,19 @@ class StallDetector:
         now = _now()
 
         for snap in current_jobs:
+            # A job that is Active (Stat=1) but has no task in the Rendering
+            # state is queued/pending - nobody is actually rendering it right
+            # now (e.g. it was blacklisted off the only worker and is waiting
+            # for a free machine). Such a job has no progress and writes no
+            # files by definition, so it must NOT accrue stall counts.
+            if not snap.is_rendering:
+                # Keep its baseline fresh so it does not instantly trip a stall
+                # the moment a worker finally picks it up again.
+                self._snapshots[snap.job_id] = snap
+                self._history.setdefault(snap.job_id, StallHistory(job_id=snap.job_id))
+                log.debug("Job %s is queued/not-rendering - skipping stall check", snap.job_id)
+                continue
+
             prev = self._snapshots.get(snap.job_id)
 
             if prev is None:
@@ -144,15 +158,15 @@ class StallDetector:
             output_dirs = job.get("OutDir") or props.get("OutDir") or []
             output_dir = output_dirs[0] if output_dirs else ""
 
-            completed = job.get("CompletedChunks", props.get("Comp", 0))
-            total = max(int(props.get("Tasks", 1) or 1), 1)
-            progress = round(completed / total * 100, 2)
-
-            worker = self._get_active_worker(job_id)
+            progress = self._job_progress(job, props)
+            is_rendering = self._job_is_rendering(job)
+            worker = self._job_worker(job, job_id)
 
             log.debug(
-                "Job snapshot: id=%s name=%s stat=%s progress=%.1f%% out=%s worker=%s",
-                job_id, props.get("Name", job_id), stat, progress, output_dir, worker,
+                "Job snapshot: id=%s name=%s stat=%s progress=%.1f%% out=%s "
+                "worker=%s rendering=%s rchunks=%s",
+                job_id, props.get("Name", job_id), stat, progress, output_dir,
+                worker, is_rendering, job.get("RenderingChunks"),
             )
 
             result.append(JobSnapshot(
@@ -161,24 +175,62 @@ class StallDetector:
                 progress=progress,
                 output_dir=output_dir,
                 worker=worker,
+                is_rendering=is_rendering,
             ))
 
         return result
 
-    # Deadline 10 Task.Stat codes (same scheme as Job.Stat but per-task):
-    #   1 = Queued
-    #   2 = Rendering
-    #   3 = Suspended
-    #   4 = Completed
-    #   5 = Failed
-    #   8 = Pending
-    _TASK_STAT_RENDERING = 2
+    @staticmethod
+    def _job_progress(job: dict, props: dict) -> float:
+        """Progress %, preferring the authoritative chunk counters.
+
+        Deadline tracks per-chunk state on the job. CompletedChunks/total is
+        the real progress; fall back to Props.Comp only when chunk counters
+        are unavailable.
+        """
+        comp = job.get("CompletedChunks")
+        rendering = job.get("RenderingChunks", 0) or 0
+        queued    = job.get("QueuedChunks", 0) or 0
+        pending   = job.get("PendingChunks", 0) or 0
+        suspended = job.get("SuspendedChunks", 0) or 0
+        failed    = job.get("FailedChunks", 0) or 0
+
+        if comp is not None:
+            total_chunks = (comp + rendering + queued + pending
+                            + suspended + failed)
+            if total_chunks > 0:
+                return round(comp / total_chunks * 100, 2)
+
+        # Fallback: Props.Comp over Props.Tasks
+        comp = comp if comp is not None else props.get("Comp", 0) or 0
+        total = max(int(props.get("Tasks", 1) or 1), 1)
+        return round(comp / total * 100, 2)
+
+    @staticmethod
+    def _job_is_rendering(job: dict) -> bool:
+        """Authoritative 'is a worker actively rendering this job right now?'
+
+        Per the Deadline REST docs: an Active job (Stat=1) is either idle
+        (queued) or rendering; use RenderingChunks to tell them apart.
+        RenderingChunks > 0 means at least one chunk is actively rendering.
+        """
+        try:
+            return int(job.get("RenderingChunks", 0) or 0) > 0
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _job_worker(job: dict, job_id: str):
+        """Worker rendering this job, from the job dict (top-level 'Mach')."""
+        return job.get("Mach") or job.get("MachineName") or None
 
     def _get_active_worker(self, job_id: str) -> Optional[str]:
-        """Return the name of the worker currently rendering a task for this job.
+        """Return the name of a worker assigned to a task of this job.
 
-        Falls back to any task that has a Slave assigned if no Rendering task
-        is found (useful when the job just stalled and task state is stale).
+        This is a fallback used only when the job dict does not carry a worker
+        name. The authoritative source is the job's own 'Mach' field
+        (see _job_worker); task worker codes vary across Deadline versions, so
+        we simply return the first task 'Slave' we find.
         """
         try:
             tasks = self.con.Tasks.GetJobTasks(job_id)
@@ -190,11 +242,7 @@ class StallDetector:
         if isinstance(tasks, dict):
             tasks = tasks.get("Tasks", []) or []
 
-        rendering_worker = None
-        any_worker = None
-
         for task in tasks:
-            # Possible worker field names across Deadline versions:
             worker = (
                 task.get("Slave")
                 or task.get("SlaveRend")
@@ -202,24 +250,9 @@ class StallDetector:
                 or task.get("RendSlave")
                 or task.get("Mach")
             )
-            if not worker:
-                continue
-
-            stat = task.get("Stat")
-            # Accept both numeric (Stat=2) and string ("Rendering") representations
-            is_rendering = stat == self._TASK_STAT_RENDERING or stat == "Rendering"
-
-            if is_rendering and rendering_worker is None:
-                rendering_worker = worker
-            if any_worker is None:
-                any_worker = worker
-
-            log.debug(
-                "Task for job %s: stat=%r worker=%r keys=%s",
-                job_id, stat, worker, sorted(task.keys())[:10],
-            )
-
-        return rendering_worker or any_worker
+            if worker:
+                return worker
+        return None
 
     def _new_files_exist(self, output_dir: str, since: datetime) -> bool:
         """

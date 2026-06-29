@@ -48,12 +48,13 @@ def test_second_stall_blacklists_worker(detector_with_stale_baseline, fake_con):
         "Props": {"Name": "test_job"},
         "MachineName": "render-node-01",
     }
-    fake_con.Jobs.GetJobMachineBlacklist.return_value = []
+    fake_con.Jobs.GetJobMachineLimit.return_value = {"SlaveList": []}
 
     action = handle_stall(fake_con, stalled2[0], job_dict, notifier)
 
     assert action == "requeued+blacklisted"
-    fake_con.Jobs.SetJobMachineBlacklist.assert_called_once_with(
-        "job-001", ["render-node-01"]
+    # limit=0 (no cap), blacklist the worker, whitelistFlag=False
+    fake_con.Jobs.SetJobMachineLimit.assert_called_once_with(
+        "job-001", 0, ["render-node-01"], False
     )
     fake_con.Jobs.RequeueJob.assert_called()

@@ -68,12 +68,27 @@ def _stall_counter_text(count: int, threshold: int = 3) -> Text:
 def _status_text(status: str) -> Text:
     s = status.upper()
     if s == "OK":
-        return Text("[ OK ]",  style="green")
+        return Text("[ OK  ]", style="green")
     if "STALL" in s:
         return Text("[STALL]", style="bold yellow")
     if "SUSPEND" in s:
         return Text("[SUSP ]", style="bold red")
+    if "QUEUE" in s:
+        return Text("[QUEUE]", style="cyan")
     return Text(s, style="dim")
+
+
+# A job earns a spinning indicator only while a worker is actively rendering it.
+_RENDERING_DL_STATUSES = {"rendering"}
+
+
+def _is_rendering(info: dict) -> bool:
+    """True only when Deadline reports the job as actively Rendering.
+
+    Suspended / Queued / Completed / Failed jobs are not rendering and must
+    show a static marker instead of a spinner.
+    """
+    return str(info.get("dl_status", "")).lower() in _RENDERING_DL_STATUSES
 
 
 def _should_suspend(history, job_states: dict) -> bool:
@@ -138,16 +153,20 @@ def _poll_worker(
                     continue
 
                 handle_stall(con, history, job_dict, notifier)
-                state.job_states[history.job_id] = {
+                # Update in place so progress/dl_status set by the refresh pass
+                # are preserved (do not blow away the whole row).
+                js = state.job_states.setdefault(history.job_id, {})
+                js.update({
                     "name":        job_dict.get("Props", {}).get("Name", history.job_id),
                     "status":      "suspended" if history.stall_count >= 3 else "stalled",
                     "stall_count": history.stall_count,
                     "worker": (
-                        job_dict.get("MachineName")
+                        job_dict.get("Mach")
+                        or job_dict.get("MachineName")
                         or (history.last_snapshot.worker if history.last_snapshot else None)
                     ),
                     "since": _now(),
-                }
+                })
 
         # --- refresh active jobs + progress ---
         try:
@@ -159,18 +178,23 @@ def _poll_worker(
                 props = j.get("Props", {}) or {}
                 name  = props.get("Name", jid)
 
-                comp  = int(j.get("CompletedChunks", props.get("Comp", 0)) or 0)
-                total = max(int(props.get("Tasks", 1) or 1), 1)
-                pct   = round(comp / total * 100, 1)
+                # Progress + state come from the job's authoritative chunk
+                # counters, not from parsing per-task status codes (which vary
+                # between Deadline versions).
+                pct = detector._job_progress(j, props)
 
-                stat_map  = {1: "Rendering", 2: "Suspended", 3: "Completed",
-                             4: "Failed",    6: "Pending"}
-                dl_status = stat_map.get(j.get("Stat", -1), "?")
+                # Stat=1 is Active = idle (Queued) OR Rendering. The Deadline
+                # docs say: use RenderingChunks to tell them apart.
+                is_rendering = detector._job_is_rendering(j)
+                worker = detector._job_worker(j, jid) or detector._get_active_worker(jid)
 
-                worker = (
-                    j.get("MachineName")
-                    or detector._get_active_worker(jid)
-                )
+                stat = j.get("Stat", -1)
+                if stat == 1:
+                    dl_status = "Rendering" if is_rendering else "Queued"
+                else:
+                    stat_map = {2: "Suspended", 3: "Completed",
+                                4: "Failed", 6: "Pending"}
+                    dl_status = stat_map.get(stat, "?")
 
                 with state.lock:
                     if jid not in state.job_states:
@@ -181,10 +205,24 @@ def _poll_worker(
                             "worker":      worker,
                             "since":       "-",
                         }
-                    state.job_states[jid]["pct"]       = pct
-                    state.job_states[jid]["dl_status"] = dl_status
+                    js = state.job_states[jid]
+                    js["pct"]       = pct
+                    js["dl_status"] = dl_status
                     if worker:
-                        state.job_states[jid]["worker"] = worker
+                        js["worker"] = worker
+
+                    # Keep the displayed status in sync with Deadline, but never
+                    # downgrade an active stall/suspend escalation that the
+                    # recovery logic set this cycle.
+                    cur = js.get("status", "ok")
+                    if cur not in ("stalled", "suspended"):
+                        if dl_status == "Suspended":
+                            js["status"] = "suspended"
+                        elif dl_status == "Rendering":
+                            js["status"] = "ok"
+                        else:
+                            # Pending / Queued / etc.
+                            js["status"] = "queued"
 
         except Exception as exc:
             log.error("Job refresh failed: %s", exc)
@@ -224,7 +262,7 @@ def _build_table(job_states: dict, frame: int) -> Table:
         expand=True,
         padding=(0, 1),
     )
-    table.add_column("",         width=2,  no_wrap=True)
+    table.add_column("",         width=1,  no_wrap=True)
     table.add_column("Job",      style="white", no_wrap=True, min_width=20)
     table.add_column("Status",   min_width=9)
     table.add_column("Stalls",   justify="center", min_width=7)
@@ -238,13 +276,16 @@ def _build_table(job_states: dict, frame: int) -> Table:
         pct       = info.get("pct", 0.0)
         dl_status = info.get("dl_status", "?")
 
+        # Spinner only for actively rendering jobs; everything else is static.
+        marker = Text(spin, style="cyan") if _is_rendering(info) else Text(".", style="dim")
+
         bar_len = 10
         filled  = int(bar_len * pct / 100)
         bar     = "[" + "#" * filled + "." * (bar_len - filled) + f"] {pct:5.1f}%"
         prog_cell = Text.from_markup(f"{bar}\n[dim]{dl_status}[/]")
 
         table.add_row(
-            Text(spin, style="cyan"),
+            marker,
             info.get("name", job_id),
             _status_text(info.get("status", "ok")),
             _stall_counter_text(info.get("stall_count", 0)),
@@ -265,6 +306,13 @@ def run_dashboard(detector: StallDetector, notifier: TelegramNotifier) -> None:
     stop_evt = threading.Event()
     frame    = 0
 
+    # A dedicated console for the dashboard. force_terminal=True makes Rich
+    # emit real control codes (cursor moves + alternate screen) even when it
+    # cannot auto-detect a TTY - this is the case under Git Bash / MinTTY and
+    # some PowerShell hosts, where the previous auto-detected fallback printed
+    # the header again on every refresh (the "many headers" bug).
+    dash_console = Console(force_terminal=True)
+
     threading.Thread(
         target=_poll_worker,
         args=(state, detector, notifier, stop_evt),
@@ -277,11 +325,6 @@ def run_dashboard(detector: StallDetector, notifier: TelegramNotifier) -> None:
             args=(state.action_queue, stop_evt),
             daemon=True,
         ).start()
-    else:
-        console.print(
-            "[dim yellow]readchar not installed — hotkeys disabled "
-            "(pip install readchar)[/]"
-        )
 
     HEADER = (
         f"[bold cyan]+= Deadline Stall Monitor ==[/]"
@@ -292,10 +335,12 @@ def run_dashboard(detector: StallDetector, notifier: TelegramNotifier) -> None:
 
     try:
         with Live(
-            console=console,
+            console=dash_console,
             refresh_per_second=int(1 / TICK),
-            screen=False,
+            screen=True,        # alternate screen buffer: exactly one frame
             transient=False,
+            redirect_stdout=True,   # swallow stray prints from any thread
+            redirect_stderr=True,   # keep logs out of the live region
         ) as live:
             while True:
                 with state.lock:
@@ -354,7 +399,10 @@ def run_dashboard(detector: StallDetector, notifier: TelegramNotifier) -> None:
                 time.sleep(TICK)
 
     except KeyboardInterrupt:
-        console.print("\n[dim]Monitor stopped.[/]")
+        pass
+    finally:
+        # We are back on the normal screen buffer here.
+        console.print("[dim]Monitor stopped.[/]")
 
 
 # ---------------------------------------------------------------------------
@@ -391,7 +439,8 @@ def run_watchdog(detector: StallDetector, notifier: TelegramNotifier) -> None:
 
                 name   = job_dict.get("Props", {}).get("Name", history.job_id)
                 worker = (
-                    job_dict.get("MachineName")
+                    job_dict.get("Mach")
+                    or job_dict.get("MachineName")
                     or (history.last_snapshot.worker if history.last_snapshot else None)
                 )
                 sc = history.stall_count
@@ -440,10 +489,13 @@ def main() -> None:
     STALL_THRESHOLD = args.threshold
     _RUNTIME_POLL   = args.poll
 
+    # Always log to stderr. In dashboard mode the Live region redirects
+    # stderr so log lines are captured instead of tearing the single frame.
     logging.basicConfig(
         level=getattr(logging, args.log_level),
         format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
         datefmt="%H:%M:%S",
+        stream=sys.stderr,
     )
 
     try:

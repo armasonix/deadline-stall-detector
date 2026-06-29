@@ -16,25 +16,42 @@ def _now() -> datetime:
 
 
 def _make_job(job_id="job-001", name="test_job", progress=50.0, output_dir="",
-              worker="render-node-01"):
-    """Fake job dict matching the Deadline Jobs API shape."""
+              worker="render-node-01", rendering=True):
+    """Fake job dict matching the real Deadline Jobs API shape.
+
+    Stat is a TOP-LEVEL field. Stat=1 == Active (the only state the detector
+    considers). Whether a worker is actively rendering is determined by the
+    chunk counters: RenderingChunks > 0 means rendering, == 0 means queued.
+    The worker name lives in the top-level 'Mach' field.
+    """
+    total = 100
+    comp = int(progress)
+    remaining = max(total - comp, 0)
     return {
         "_id": job_id,
+        "Stat": 1,
+        "Mach": worker,
+        "CompletedChunks": comp,
+        "RenderingChunks": 1 if rendering else 0,
+        "QueuedChunks": (remaining - 1 if rendering else remaining),
+        "PendingChunks": 0,
+        "SuspendedChunks": 0,
+        "FailedChunks": 0,
         "Props": {
-            "Stat": 3,
             "Name": name,
-            "Comp": int(progress),
-            "Tasks": 100,
+            "Comp": comp,
+            "Tasks": total,
             "OutDir": [output_dir] if output_dir else [],
         },
-        "MachineName": worker,
     }
 
 
-def _make_con(jobs=None):
+def _make_con(jobs=None, tasks=None):
     con = MagicMock()
     con.Jobs.GetJobs.return_value = jobs or []
-    con.Tasks.GetJobTasks.return_value = []
+    con.Tasks.GetJobTasks.return_value = (
+        tasks if tasks is not None else [{"Slave": "render-node-01"}]
+    )
     return con
 
 
@@ -136,6 +153,53 @@ def test_stall_suppressed_when_output_dir_missing():
     con = _make_con(jobs=[_make_job(progress=50.0, output_dir="C:/does_not_exist_xyz")])
     detector = StallDetector(con=con, stall_threshold_min=20)
     _set_baseline(detector, progress=50.0, output_dir="C:/does_not_exist_xyz")
+
+    result = detector.check()
+
+    assert result == []
+
+
+def test_rendering_chunks_marks_job_as_rendering(tmp_path):
+    """Regression: a job with RenderingChunks=1 and a worker in 'Mach' is
+    actively rendering (NOT queued) and must be eligible to stall.
+    Mirrors the real Deadline payload (Mach set, MachineName absent)."""
+    empty_dir = str(tmp_path)
+    job = {
+        "_id": "6a428000",
+        "Stat": 1,
+        "Mach": "DESKTOP-C8KN1E3",
+        "MachineName": None,
+        "CompletedChunks": 0,
+        "RenderingChunks": 1,
+        "QueuedChunks": 0,
+        "PendingChunks": 0,
+        "SuspendedChunks": 0,
+        "FailedChunks": 0,
+        "Props": {"Name": "ep01-sq01-sh070", "Tasks": 1,
+                  "OutDir": [empty_dir]},
+    }
+    con = _make_con(jobs=[job])
+    detector = StallDetector(con=con, stall_threshold_min=20)
+    _set_baseline(detector, job_id="6a428000", progress=0.0, output_dir=empty_dir)
+
+    result = detector.check()
+
+    assert len(result) == 1
+    assert result[0].job_id == "6a428000"
+    assert result[0].last_snapshot.worker == "DESKTOP-C8KN1E3"
+
+
+def test_queued_job_does_not_stall(tmp_path):
+    """Active job with NO rendering task (queued / blacklisted off the only
+    worker) must never accrue a stall, even with frozen progress and an empty
+    output dir. This is the single-machine blacklist case."""
+    empty_dir = str(tmp_path)
+    # RenderingChunks == 0 -> the job is queued, not rendering.
+    con = _make_con(
+        jobs=[_make_job(progress=50.0, output_dir=empty_dir, rendering=False)],
+    )
+    detector = StallDetector(con=con, stall_threshold_min=20)
+    _set_baseline(detector, progress=50.0, output_dir=empty_dir)
 
     result = detector.check()
 
