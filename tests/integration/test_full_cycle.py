@@ -1,4 +1,4 @@
-"""Integration tests — full stall/recovery cycle, no live Deadline needed."""
+"""Integration tests - full stall/recovery cycle, no live Deadline needed."""
 from __future__ import annotations
 
 from datetime import timedelta, timezone
@@ -42,7 +42,7 @@ def test_second_stall_blacklists_worker(detector_with_stale_baseline, fake_con):
     stalled2 = detector_with_stale_baseline.check()
     assert stalled2[0].stall_count == 2
 
-    # job_dict carries the worker — as it would from the real API
+    # job_dict carries the worker - as it would from the real API
     job_dict = {
         "_id": "job-001",
         "Props": {"Name": "test_job"},

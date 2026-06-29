@@ -4,7 +4,7 @@ An autonomous watchdog for **Thinkbox Deadline 10.x** render farm environments.
 
 This tool detects silently hung Maya, V-Ray, Redshift, and similar render jobs where progress has stopped and no new files are being written to disk. When a stall is confirmed, it automatically applies a **three-stage escalation** process without requiring human intervention. Operators receive Telegram alerts at each stage and can override the process at any time through the live dashboard or **Thinkbox Deadline Monitor**.
 
-[![CI](https://github.com/armasonix/deadline-stall-detector/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/armasonix/deadline-stall-detector/actions/workflows/ci.yml)
+[![CI](https://github.com/armasonix/deadline-stall-detector/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/armasonix/deadline-stall-detector/actions/workflows/ci.yml)
 
 ---
 
@@ -42,9 +42,9 @@ On a render farm with **20+** nodes, **Maya**, **V-Ray**, **Redshift**, and othe
 
 | Stall # | Action | Telegram |
 |---------|--------|----------|
-| 1 | `RequeueJob` -> any available worker | STALLED: {job} — requeue attempt 1 |
-| 2 | Blacklist previous worker (`SetJobMachineLimit`) + `RequeueJob` | STALLED AGAIN: {job} — blacklisting {worker} |
-| >= 3 | `SuspendJob` — likely scene issue | SCENE ISSUE: {job} — suspended, manual review needed |
+| 1 | `RequeueJob` -> any available worker | STALLED: {job} - requeue attempt 1 |
+| 2 | Blacklist previous worker (`SetJobMachineLimit`) + `RequeueJob` | STALLED AGAIN: {job} - blacklisting {worker} |
+| >= 3 | `SuspendJob` - likely scene issue | SCENE ISSUE: {job} - suspended, manual review needed |
 
 On a single-machine farm, when the same worker has already been blacklisted and there is no fresh rendering worker to blame, the tier-3 suspend is **skipped** for that job so it stays queued instead of being suspended off the farm entirely.
 
@@ -156,7 +156,7 @@ Hotkeys:
 A scrolling monitor mode that keeps job status updated **row by row**.
 
 ```text
-Deadline Stall Monitor v1.x — watchdog mode (threshold=20m, poll=60s)
+Deadline Stall Monitor v1.1.7 - watchdog mode (threshold=20m, poll=60s)
 ------------------------------------------------------------
 14:31:02  Monitoring 12 active jobs...
 14:32:07  [STALL]: shot_042_beauty requeue #1
@@ -188,7 +188,7 @@ python -m pytest tests -v
 python -m pytest tests --cov=deadline_tools --cov-report=term-missing
 ```
 
-29 tests: 27 unit + 2 integration, all mock-based.
+30 tests: 28 unit + 2 integration, all mock-based.
 
 ---
 

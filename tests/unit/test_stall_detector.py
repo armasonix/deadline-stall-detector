@@ -223,3 +223,15 @@ def test_current_worker_already_failed_tracks_prior_blacklist_state(tmp_path):
     assert result[0].stall_count == 3
     assert result[0].failed_workers == ["render-node-01", "render-node-02"]
     assert result[0].current_worker_already_failed is False
+
+def test_not_stalled_progress_changed_downwards(tmp_path):
+    """Progress rollback/requeue is still active work, not a silent stall."""
+    output_dir = str(tmp_path)
+    con = _make_con(jobs=[_make_job(progress=40.0, output_dir=output_dir)])
+    detector = StallDetector(con=con, stall_threshold_min=20)
+    _set_baseline(detector, progress=50.0, output_dir=output_dir)
+
+    result = detector.check()
+
+    assert result == []
+

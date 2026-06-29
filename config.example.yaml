@@ -1,8 +1,12 @@
+# Reference configuration values for documentation and onboarding only.
+# Runtime config is read from environment variables or .env.
+# Keep this file aligned with .env.example.
+
 # Deadline WebService connection
 deadline:
   host: localhost
   port: 8081
-  repo_path: C:\DeadlineRepository10
+  repo_path: C:/DeadlineRepository10
 
 # Stall detection settings
 monitor:
@@ -10,9 +14,9 @@ monitor:
   stall_threshold_min: 20
   log_level: INFO
 
-# Telegram notifications (optional)
-# Set values here OR export as env vars:
-#   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+# Telegram notifications are optional.
+# Runtime uses TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, and TELEGRAM_PROXY.
 telegram:
   bot_token: ""
   chat_id: ""
+  proxy: ""

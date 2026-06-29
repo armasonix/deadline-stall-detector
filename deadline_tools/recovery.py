@@ -36,7 +36,7 @@ def handle_stall(
         con.Jobs.SuspendJob(job_id)
         if notifier:
             notifier.critical(
-                f"🚨 SCENE ISSUE: *{job_name}* — suspended after {count} stalls. "
+                f"🚨 SCENE ISSUE: *{job_name}* - suspended after {count} stalls. "
                 "Manual review needed."
             )
         event_log.record("suspended", job_id, job_name, worker, count)
@@ -60,7 +60,7 @@ def handle_stall(
         con.Jobs.RequeueJob(job_id)
         if notifier:
             notifier.warn(
-                f"⚠️⚠️ STALLED AGAIN: *{job_name}* — blacklisting `{worker}` + requeue"
+                f"⚠️⚠️ STALLED AGAIN: *{job_name}* - blacklisting `{worker}` + requeue"
             )
         event_log.record("requeued+blacklisted", job_id, job_name, worker, count)
         return "requeued+blacklisted"
@@ -69,6 +69,6 @@ def handle_stall(
     log.warning("REQUEUE job=%s name=%s", job_id, job_name)
     con.Jobs.RequeueJob(job_id)
     if notifier:
-        notifier.warn(f"⚠️ STALLED: *{job_name}* — requeue attempt {count}")
+        notifier.warn(f"⚠️ STALLED: *{job_name}* - requeue attempt {count}")
     event_log.record("requeued", job_id, job_name, worker, count)
     return "requeued"

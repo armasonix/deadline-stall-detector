@@ -15,7 +15,34 @@ import sys
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Optional
+
+
+
+def _load_dotenv_from_common_locations() -> None:
+    """Load .env before module-level defaults are read.
+
+    This keeps behavior identical for both:
+      - python -m deadline_tools
+      - installed console script: deadline-monitor
+    """
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+
+    candidates = (
+        Path.cwd() / ".env",
+        Path(__file__).resolve().parent.parent / ".env",
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            load_dotenv(candidate, override=False)
+            break
+
+
+_load_dotenv_from_common_locations()
 
 from rich.console import Console, Group
 from rich.panel import Panel
@@ -477,7 +504,7 @@ def run_dashboard(detector: StallDetector, notifier: TelegramNotifier) -> None:
 
 def run_watchdog(detector: StallDetector, notifier: TelegramNotifier) -> None:
     console.print(
-        f"[bold cyan] Deadline Stall Monitor {APP_VERSION_LABEL}[/] — watchdog mode  "
+        f"[bold cyan] Deadline Stall Monitor {APP_VERSION_LABEL}[/] - watchdog mode  "
         f"[dim](threshold={STALL_THRESHOLD}m, poll={POLL_INTERVAL}s)[/]"
     )
     console.rule(style="dim cyan")

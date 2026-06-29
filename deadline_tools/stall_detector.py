@@ -94,11 +94,11 @@ class StallDetector:
                 # Not enough time has passed yet
                 continue
 
-            progress_moved = snap.progress > prev.progress
+            progress_moved = snap.progress != prev.progress
             new_files = self._new_files_exist(snap.output_dir, prev.timestamp)
 
             if progress_moved or new_files:
-                # Progress detected - reset counter, update snapshot
+                # Progress changed or output appeared - reset counter, update snapshot
                 history = self._history[snap.job_id]
                 if history.stall_count > 0:
                     log.info("Job %s recovered (progress=%.1f%%)", snap.job_id, snap.progress)

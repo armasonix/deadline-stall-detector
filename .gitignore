@@ -18,6 +18,7 @@ venv/
 # Runtime output
 logs/
 test_assets/renders/
+tools/
 
 # OS
 .DS_Store
