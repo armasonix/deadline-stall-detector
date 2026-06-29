@@ -29,7 +29,7 @@ def _make_job_dict(job_id="job-001", name="test_job"):
 
 def _make_con():
     con = MagicMock()
-    con.Jobs.GetJobMachineBlacklist.return_value = []
+    con.Jobs.GetJobMachineLimit.return_value = {"SlaveList": []}
     return con
 
 
@@ -49,7 +49,7 @@ def test_tier1_requeue():
 
 
 def test_tier2_blacklist_and_requeue():
-    """stall_count=2 -> SetJobMachineBlacklist + RequeueJob called."""
+    """stall_count=2 -> SetJobMachineLimit (blacklist) + RequeueJob called."""
     con = _make_con()
     notifier = MagicMock()
 
@@ -57,7 +57,10 @@ def test_tier2_blacklist_and_requeue():
                           _make_job_dict(), notifier)
 
     assert action == "requeued+blacklisted"
-    con.Jobs.SetJobMachineBlacklist.assert_called_once_with("job-001", ["render-node-01"])
+    # limit=0 (no cap), blacklist the worker, whitelistFlag=False
+    con.Jobs.SetJobMachineLimit.assert_called_once_with(
+        "job-001", 0, ["render-node-01"], False
+    )
     con.Jobs.RequeueJob.assert_called_once_with("job-001")
     notifier.warn.assert_called_once()
 
@@ -84,5 +87,5 @@ def test_tier2_no_worker_skips_blacklist():
                           _make_job_dict(), notifier)
 
     assert action == "requeued+blacklisted"
-    con.Jobs.SetJobMachineBlacklist.assert_not_called()
+    con.Jobs.SetJobMachineLimit.assert_not_called()
     con.Jobs.RequeueJob.assert_called_once()

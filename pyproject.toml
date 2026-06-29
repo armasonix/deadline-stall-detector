@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deadline-stall-detector"
+version = "1.1.7"
+description = "Autonomous stall watchdog for Thinkbox Deadline 10.x render farms."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Pavel Kuzmenko" }]
+keywords = ["deadline", "thinkbox", "render-farm", "watchdog", "vray", "maya"]
+
+dependencies = [
+    "rich>=13.0",
+    "requests[socks]",
+    "PySocks",
+    "python-dotenv",
+    "readchar>=4.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-mock>=3.0",
+    "pytest-cov",
+]
+
+[project.scripts]
+deadline-monitor = "deadline_tools.monitor_cli:main"
+
+[tool.setuptools]
+packages = ["deadline_tools"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
