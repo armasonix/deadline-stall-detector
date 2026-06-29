@@ -21,31 +21,20 @@ On a render farm with **20+** nodes, **Maya**, **V-Ray**, **Redshift**, and othe
 
 ---
 
-## Architecture
+## How it works
 
-```mermaid
-flowchart TD
-    A["monitor_cli.py\npolling loop"] --> B["StallDetector.check()"]
-    B --> C["Deadline WebService\nlocalhost:8081"]
-    C --> D{"Job Stat == Active (1)?"}
-    D -- No --> E[skip]
-    D -- Yes --> R{"RenderingChunks > 0?"}
-    R -- No --> RQ["Queued / waiting\nrefresh baseline, no stall"]
-    R -- Yes --> F["JobSnapshot\nprogress + output_dir mtime"]
-    F --> G{"Previous\nsnapshot exists?"}
-    G -- No --> H[Store baseline]
-    G -- Yes --> I{"elapsed >\nthreshold?"}
-    I -- No --> J[Too early - skip]
-    I -- Yes --> K{"progress moved\nOR new file on disk?"}
-    K -- Yes --> L["Reset stall_count\nupdate snapshot"]
-    K -- No --> M["StallHistory\nstall_count++"]
-    M --> N{stall_count?}
-    N -- 1 --> O["RequeueJob\n-> any worker"]
-    N -- 2 --> P["SetJobMachineLimit (blacklist)\n+ RequeueJob"]
-    N -- ">=3" --> Q["SuspendJob\n+ escalate"]
-    O & P & Q --> S["TelegramNotifier\nwarn / critical"]
-    S --> T["event_log.csv\n+ rich dashboard / watchdog log"]
-```
+![Deadline Stall Detector architecture](resources/pic-04.png)
+
+---
+
+## Screenshots
+
+![Dashboard mode](resources/pic-02.png)
+
+![Watchdog mode](resources/pic-01.png)
+
+![Telegram notifications](resources/pic-05.png)
+
 
 ---
 
@@ -158,9 +147,9 @@ A n**on-scrolling** interface for managing stalled jobs, adjusting the poll inte
 Hotkeys:
 
 #### Hotkeys: 
-- `R` requeue,
-- `S` suspend,
-- `Q` quit.
+- `R` Requeue,
+- `S` Suspend,
+- `Q` Quit.
 
 ### Watchdog Output
 

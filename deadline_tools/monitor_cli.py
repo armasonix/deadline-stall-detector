@@ -34,6 +34,7 @@ from deadline_tools.connection import get_connection
 from deadline_tools.stall_detector import StallDetector
 from deadline_tools.recovery import handle_stall
 from deadline_tools.notifier import TelegramNotifier
+from deadline_tools.version import APP_VERSION_LABEL
 
 if TYPE_CHECKING:
     pass
@@ -115,6 +116,76 @@ class _DashboardState:
         self.last_poll_ts  = 0.0
         self.action_queue: list = []
 
+def _deadline_status_for_job(detector: StallDetector, job: dict) -> str:
+    """Return the display status reported by Deadline for a raw job dict."""
+    stat = job.get("Stat", -1)
+    if stat == 1:
+        return "Rendering" if detector._job_is_rendering(job) else "Queued"
+
+    stat_map = {
+        2: "Suspended",
+        3: "Completed",
+        4: "Failed",
+        6: "Pending",
+    }
+    return stat_map.get(stat, "?")
+
+
+def _sync_job_state_from_deadline(
+    state: _DashboardState,
+    detector: StallDetector,
+    job: dict,
+) -> None:
+    """Update the dashboard row from Deadline's authoritative job state.
+
+    Rows can be changed by dashboard hotkeys between poll cycles.  The refresh
+    pass must therefore update already-known non-active jobs too; otherwise a
+    job suspended with the ``S`` hotkey can remain visually stuck as Rendering.
+    """
+    jid = job.get("_id", "")
+    if not jid:
+        return
+
+    props = job.get("Props", {}) or {}
+    name = props.get("Name", jid)
+    pct = detector._job_progress(job, props)
+    worker = detector._job_worker(job, jid) or detector._get_active_worker(jid)
+    dl_status = _deadline_status_for_job(detector, job)
+
+    with state.lock:
+        if jid not in state.job_states:
+            state.job_states[jid] = {
+                "name":        name,
+                "status":      "ok",
+                "stall_count": 0,
+                "worker":      worker,
+                "since":       "-",
+            }
+        js = state.job_states[jid]
+        js["name"] = name
+        js["pct"] = pct
+        js["dl_status"] = dl_status
+        if worker:
+            js["worker"] = worker
+
+        # Keep automatic stall escalation visible, but always allow Deadline's
+        # authoritative state transitions into and out of Suspended.  This lets
+        # a job suspended from the dashboard switch back to QUEUE/OK after an
+        # operator resumes it from Deadline Monitor.
+        cur = js.get("status", "ok")
+        if dl_status == "Suspended":
+            js["status"] = "suspended"
+        elif cur == "suspended" and dl_status == "Rendering":
+            js["status"] = "ok"
+        elif cur == "suspended" and dl_status == "Queued":
+            js["status"] = "queued"
+        elif cur not in ("stalled", "suspended"):
+            if dl_status == "Rendering":
+                js["status"] = "ok"
+            elif dl_status == "Queued":
+                js["status"] = "queued"
+            else:
+                js["status"] = dl_status.lower() if dl_status != "?" else "queued"
 
 def _poll_worker(
     state: _DashboardState,
@@ -169,61 +240,17 @@ def _poll_worker(
                     "since": _now(),
                 })
 
-        # --- refresh active jobs + progress ---
+        # --- refresh jobs + progress ---
         try:
             raw = detector._con.Jobs.GetJobs() or []
             for j in raw:
-                if j.get("Stat", -1) != 1:
+                # New dashboard rows are created for Active jobs only, but rows
+                # already visible in the dashboard must keep tracking Deadline
+                # after a hotkey action changes them to Suspended/Completed/etc.
+                jid = j.get("_id", "")
+                if j.get("Stat", -1) != 1 and jid not in state.job_states:
                     continue
-                jid   = j.get("_id", "")
-                props = j.get("Props", {}) or {}
-                name  = props.get("Name", jid)
-
-                # Progress + state come from the job's authoritative chunk
-                # counters, not from parsing per-task status codes (which vary
-                # between Deadline versions).
-                pct = detector._job_progress(j, props)
-
-                # Stat=1 is Active = idle (Queued) OR Rendering. The Deadline
-                # docs say: use RenderingChunks to tell them apart.
-                is_rendering = detector._job_is_rendering(j)
-                worker = detector._job_worker(j, jid) or detector._get_active_worker(jid)
-
-                stat = j.get("Stat", -1)
-                if stat == 1:
-                    dl_status = "Rendering" if is_rendering else "Queued"
-                else:
-                    stat_map = {2: "Suspended", 3: "Completed",
-                                4: "Failed", 6: "Pending"}
-                    dl_status = stat_map.get(stat, "?")
-
-                with state.lock:
-                    if jid not in state.job_states:
-                        state.job_states[jid] = {
-                            "name":        name,
-                            "status":      "ok",
-                            "stall_count": 0,
-                            "worker":      worker,
-                            "since":       "-",
-                        }
-                    js = state.job_states[jid]
-                    js["pct"]       = pct
-                    js["dl_status"] = dl_status
-                    if worker:
-                        js["worker"] = worker
-
-                    # Keep the displayed status in sync with Deadline, but never
-                    # downgrade an active stall/suspend escalation that the
-                    # recovery logic set this cycle.
-                    cur = js.get("status", "ok")
-                    if cur not in ("stalled", "suspended"):
-                        if dl_status == "Suspended":
-                            js["status"] = "suspended"
-                        elif dl_status == "Rendering":
-                            js["status"] = "ok"
-                        else:
-                            # Pending / Queued / etc.
-                            js["status"] = "queued"
+                _sync_job_state_from_deadline(state, detector, j)
 
         except Exception as exc:
             log.error("Job refresh failed: %s", exc)
@@ -236,6 +263,57 @@ def _poll_worker(
             time.sleep(min(0.2, remaining))
             remaining = _RUNTIME_POLL - (time.monotonic() - t0)
 
+
+def _is_manual_action_candidate(info: dict) -> bool:
+    """Return True for rows that a dashboard hotkey may act on.
+
+    Prefer explicit stalled rows, but also allow currently rendering/queued rows.
+    This keeps the dashboard hotkeys useful when an operator wants to manually
+    intervene before the automatic stall counter has advanced.
+    """
+    if info.get("stall_count", 0) > 0:
+        return True
+    return str(info.get("dl_status", "")).lower() in {"rendering", "queued"}
+
+
+def _handle_dashboard_action(
+    state: _DashboardState,
+    detector: StallDetector,
+    key: str,
+) -> bool:
+    """Handle one dashboard hotkey action.
+
+    Returns True when the dashboard should stop.  The caller owns
+    ``state.lock``; keeping this logic in a helper lets unit tests exercise the
+    actual hotkey behavior instead of only testing the refresh path.
+    """
+    if key == "q":
+        return True
+
+    if key == "r":
+        for jid, info in list(state.job_states.items()):
+            if _is_manual_action_candidate(info):
+                try:
+                    detector._con.Jobs.RequeueJob(jid)
+                    info["status"] = "ok"
+                    info["stall_count"] = 0
+                    info["dl_status"] = "Queued"
+                except Exception as exc:
+                    log.error("Dashboard requeue failed for %s: %s", jid, exc)
+        return False
+
+    if key == "s":
+        for jid, info in list(state.job_states.items()):
+            if _is_manual_action_candidate(info):
+                try:
+                    detector._con.Jobs.SuspendJob(jid)
+                    info["status"] = "suspended"
+                    info["dl_status"] = "Suspended"
+                except Exception as exc:
+                    log.error("Dashboard suspend failed for %s: %s", jid, exc)
+        return False
+
+    return False
 
 # ---------------------------------------------------------------------------
 # hotkey thread
@@ -330,7 +408,7 @@ def run_dashboard(detector: StallDetector, notifier: TelegramNotifier) -> None:
         ).start()
 
     HEADER = (
-        f"[bold cyan]+= Deadline Stall Monitor ==[/]"
+        f"[bold cyan]+= Deadline Stall Monitor {APP_VERSION_LABEL} ==[/]"
         f"[dim]  threshold={STALL_THRESHOLD}m  poll={POLL_INTERVAL}s  [/]"
         f"[bold cyan]=+[/]"
         f"    [dim][ [r] requeue  [s] suspend  [q] quit ][/]"
@@ -350,26 +428,9 @@ def run_dashboard(detector: StallDetector, notifier: TelegramNotifier) -> None:
                 with state.lock:
                     while state.action_queue:
                         key = state.action_queue.pop(0)
-                        if key == "q":
+                        if _handle_dashboard_action(state, detector, key):
                             stop_evt.set()
                             raise KeyboardInterrupt
-                        elif key == "r":
-                            for jid, info in list(state.job_states.items()):
-                                if info.get("stall_count", 0) > 0:
-                                    try:
-                                        detector._con.Jobs.RequeueJob(jid)
-                                        info["status"]      = "ok"
-                                        info["stall_count"] = 0
-                                    except Exception:
-                                        pass
-                        elif key == "s":
-                            for jid, info in list(state.job_states.items()):
-                                if info.get("stall_count", 0) > 0:
-                                    try:
-                                        detector._con.Jobs.SuspendJob(jid)
-                                        info["status"] = "suspended"
-                                    except Exception:
-                                        pass
 
                 next_poll = max(0, int(_RUNTIME_POLL - (time.monotonic() - state.last_poll_ts)))
 
@@ -416,7 +477,7 @@ def run_dashboard(detector: StallDetector, notifier: TelegramNotifier) -> None:
 
 def run_watchdog(detector: StallDetector, notifier: TelegramNotifier) -> None:
     console.print(
-        f"[bold cyan] Deadline Stall Monitor[/] — watchdog mode  "
+        f"[bold cyan] Deadline Stall Monitor {APP_VERSION_LABEL}[/] — watchdog mode  "
         f"[dim](threshold={STALL_THRESHOLD}m * poll={POLL_INTERVAL}s)[/]"
     )
     console.rule(style="dim cyan")

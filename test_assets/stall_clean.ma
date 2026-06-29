@@ -1,6 +1,6 @@
 //Maya ASCII 2022 scene
 //Name: stall_clean.ma
-//Last modified: Mon, Jun 29, 2026 07:40:19 PM
+//Last modified: Mon, Jun 29, 2026 08:49:22 PM
 //Codeset: 1251
 requires maya "2022";
 requires "stereoCamera" "10.0";
@@ -12,7 +12,7 @@ fileInfo "product" "Maya 2022";
 fileInfo "version" "2022";
 fileInfo "cutIdentifier" "202303271415-baa69b5798";
 fileInfo "osv" "Windows 10 Pro v2009 (Build: 19045)";
-fileInfo "UUID" "1B146596-4621-FDAF-905A-508BAB1AC3CB";
+fileInfo "UUID" "EB2977C0-4AF7-1E40-5F94-B291998688BC";
 createNode transform -s -n "persp";
 	rename -uid "512FA202-450D-F4CF-CA27-1980F5BA18A5";
 	setAttr ".v" no;
@@ -191,7 +191,7 @@ createNode script -n "sceneConfigurationScriptNode";
 	setAttr ".b" -type "string" "playbackOptions -min 1 -max 120 -ast 1 -aet 200 ";
 	setAttr ".st" 6;
 createNode mayaUsdLayerManager -n "mayaUsdLayerManager1";
-	rename -uid "A29D8EE3-45DA-582B-0F91-6DB46FF94FAA";
+	rename -uid "4DA09C70-48F8-AAF8-68B4-DC995BFBA01E";
 	setAttr ".sst" -type "string" "";
 select -ne :time1;
 	setAttr ".o" 1;
@@ -336,7 +336,7 @@ select -ne :defaultRenderGlobals;
 	setAttr ".DeadlineUserHomeDir" -type "string" "C:/Users/ledorub3d/AppData/Local/Thinkbox/Deadline10";
 	setAttr ".DeadlineMayaRepoPath" -type "string" "C:/DeadlineRepository10/submission/Maya/Main";
 	setAttr ".DeadlineIntegrationRepoPath" -type "string" "C:/DeadlineRepository10/submission/Integration/Main";
-	setAttr ".deadlineJobName" -type "string" "ep01-sq01-sh100";
+	setAttr ".deadlineJobName" -type "string" "ep01-sq01-sh110";
 	setAttr ".deadlineJobComment" -type "string" "";
 	setAttr ".deadlineDepartment" -type "string" "";
 	setAttr ".deadlineGroup" -type "string" "none";
