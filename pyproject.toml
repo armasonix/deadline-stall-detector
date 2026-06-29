@@ -9,7 +9,7 @@ description = "Autonomous stall watchdog for Thinkbox Deadline 10.x render farms
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "armasonix" }]
+authors = [{ name = "Pavel Kuzmenko" }]
 keywords = ["deadline", "thinkbox", "render-farm", "watchdog", "vray", "maya"]
 
 dependencies = [

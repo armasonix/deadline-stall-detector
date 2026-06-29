@@ -11,7 +11,7 @@ def get_connection():
     Env vars:
         DEADLINE_REPO_PATH  - path to DeadlineRepository root
         DEADLINE_HOST       - hostname or IP (default: localhost)
-        DEADLINE_PORT       - WebService port (default: 8082)
+        DEADLINE_PORT       - WebService port (default: 8081)
     """
     repo_path = os.environ.get("DEADLINE_REPO_PATH", r"C:\DeadlineRepository10")
     api_path = str(Path(repo_path) / "api" / "python")
